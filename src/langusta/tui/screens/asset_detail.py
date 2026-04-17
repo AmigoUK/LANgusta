@@ -27,6 +27,7 @@ class AssetDetailScreen(Screen):
 
     BINDINGS = (
         Binding("q", "app.pop_screen", "Back", priority=True),
+        Binding("n", "new_note", "New note", priority=False),
     )
 
     DEFAULT_CSS = """
@@ -83,3 +84,8 @@ class AssetDetailScreen(Screen):
             yield TimelineWidget(entries)
 
         yield Footer()
+
+    def action_new_note(self) -> None:
+        from langusta.tui.screens.journal_editor import JournalEditorScreen
+
+        self.app.push_screen(JournalEditorScreen(asset_id=self._asset_id))

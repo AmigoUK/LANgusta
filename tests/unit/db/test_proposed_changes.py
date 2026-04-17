@@ -175,6 +175,65 @@ def test_resolution_is_recorded(seeded_db) -> None:
     assert row.resolved_at == NOW
 
 
+# ---------------------------------------------------------------------------
+# Disposition timeline entries (M4)
+# ---------------------------------------------------------------------------
+
+
+def test_accept_writes_disposition_timeline_entry(seeded_db) -> None:
+    from langusta.db import timeline as tl_dal
+
+    db, aid, sid = seeded_db
+    with connect(db) as conn:
+        pc_id = pc_dal.insert(
+            conn, asset_id=aid, field="hostname",
+            current_value="router", current_provenance=FieldProvenance.MANUAL,
+            proposed_value="scanner-guess", observed_at=NOW, scan_id=sid,
+        )
+        pc_dal.accept(conn, pc_id, now=NOW)
+        entries = tl_dal.list_by_asset(conn, aid)
+    disp = [e for e in entries if e.kind == "disposition"]
+    assert len(disp) == 1
+    assert "accepted" in disp[0].body.lower()
+    assert "hostname" in disp[0].body
+    assert "scanner-guess" in disp[0].body
+
+
+def test_reject_writes_disposition_timeline_entry(seeded_db) -> None:
+    from langusta.db import timeline as tl_dal
+
+    db, aid, sid = seeded_db
+    with connect(db) as conn:
+        pc_id = pc_dal.insert(
+            conn, asset_id=aid, field="hostname",
+            current_value="router", current_provenance=FieldProvenance.MANUAL,
+            proposed_value="scanner-guess", observed_at=NOW, scan_id=sid,
+        )
+        pc_dal.reject(conn, pc_id, now=NOW)
+        entries = tl_dal.list_by_asset(conn, aid)
+    disp = [e for e in entries if e.kind == "disposition"]
+    assert len(disp) == 1
+    assert "rejected" in disp[0].body.lower()
+
+
+def test_edit_writes_disposition_with_override_value(seeded_db) -> None:
+    from langusta.db import timeline as tl_dal
+
+    db, aid, sid = seeded_db
+    with connect(db) as conn:
+        pc_id = pc_dal.insert(
+            conn, asset_id=aid, field="description",
+            current_value="old", current_provenance=FieldProvenance.MANUAL,
+            proposed_value="new", observed_at=NOW, scan_id=sid,
+        )
+        pc_dal.edit_override(conn, pc_id, value="my-override", now=NOW)
+        entries = tl_dal.list_by_asset(conn, aid)
+    disp = [e for e in entries if e.kind == "disposition"]
+    assert len(disp) == 1
+    assert "edited" in disp[0].body.lower() or "override" in disp[0].body.lower()
+    assert "my-override" in disp[0].body
+
+
 def test_accept_on_resolved_proposal_raises(seeded_db) -> None:
     db, aid, sid = seeded_db
     with connect(db) as conn:

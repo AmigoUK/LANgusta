@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from langusta.core.provenance import FieldProvenance
+from langusta.db import timeline as tl_dal
 
 
 class AlreadyResolvedError(RuntimeError):
@@ -172,15 +173,37 @@ def accept(conn: sqlite3.Connection, pc_id: int, *, now: datetime) -> None:
         "WHERE id = ?",
         (now_iso, pc_id),
     )
+    tl_dal.append_entry(
+        conn,
+        asset_id=row.asset_id,
+        kind="disposition",
+        body=(
+            f"Accepted scanner proposal: {row.field} -> {row.proposed_value!r} "
+            f"(was {row.current_value!r})"
+        ),
+        now=now,
+        author="user",
+    )
 
 
 def reject(conn: sqlite3.Connection, pc_id: int, *, now: datetime) -> None:
     """Discard the proposal; asset is unchanged."""
-    _assert_open(conn, pc_id)
+    row = _assert_open(conn, pc_id)
     conn.execute(
         "UPDATE proposed_changes SET resolution = 'rejected', resolved_at = ? "
         "WHERE id = ?",
         (_iso(now), pc_id),
+    )
+    tl_dal.append_entry(
+        conn,
+        asset_id=row.asset_id,
+        kind="disposition",
+        body=(
+            f"Rejected scanner proposal: {row.field} -> {row.proposed_value!r} "
+            f"(kept {row.current_value!r})"
+        ),
+        now=now,
+        author="user",
     )
 
 
@@ -206,4 +229,15 @@ def edit_override(
         "UPDATE proposed_changes SET resolution = 'edited', resolved_at = ?, "
         "resolved_override = ? WHERE id = ?",
         (now_iso, value, pc_id),
+    )
+    tl_dal.append_entry(
+        conn,
+        asset_id=row.asset_id,
+        kind="disposition",
+        body=(
+            f"Edited scanner proposal: {row.field} override -> {value!r} "
+            f"(rejected scanner guess {row.proposed_value!r}, was {row.current_value!r})"
+        ),
+        now=now,
+        author="user",
     )
