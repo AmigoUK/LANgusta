@@ -18,6 +18,7 @@ from langusta.crypto.vault import Vault
 from langusta.db import assets as assets_dal
 from langusta.db import credentials as cred_dal
 from langusta.db import export as export_mod
+from langusta.db import import_lansweeper as import_lansweeper_mod
 from langusta.db import monitoring as mon_dal
 from langusta.db import proposed_changes as pc_dal
 from langusta.db.connection import connect
@@ -505,6 +506,28 @@ def import_cmd(
             typer.echo(f"error: {exc}", err=True)
             raise typer.Exit(code=1) from exc
     typer.echo(f"imported {path}")
+
+
+@app.command("import-lansweeper")
+def import_lansweeper_cmd(
+    csv_path: str = typer.Argument(..., help="Lansweeper CSV export."),
+) -> None:
+    """Import assets from a Lansweeper CSV export (source='imported').
+
+    Duplicate MACs or IPs (colliding with rows already in the DB) are
+    skipped — run `langusta list` first to see what's already present.
+    """
+    from pathlib import Path as _Path
+    now = datetime.now(UTC)
+    path = _Path(csv_path)
+    if not path.exists():
+        typer.echo(f"error: file not found: {path}", err=True)
+        raise typer.Exit(code=1)
+    with connect(paths.db_path()) as conn:
+        report = import_lansweeper_mod.import_lansweeper_csv(
+            conn, csv_path=path, now=now,
+        )
+    typer.echo(f"imported {report.imported}, skipped {report.skipped}")
 
 
 # ---------------------------------------------------------------------------
