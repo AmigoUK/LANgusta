@@ -6,12 +6,14 @@ M1: add, list
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime
 
 import typer
 
 from langusta import __version__, paths
 from langusta.db import assets as assets_dal
+from langusta.db import proposed_changes as pc_dal
 from langusta.db.connection import connect
 from langusta.db.migrate import latest_schema_version, migrate
 from langusta.platform import get_backend
@@ -160,3 +162,102 @@ def list_assets() -> None:
     typer.echo(_fmt(tuple("-" * w for w in widths)))
     for row in table:
         typer.echo(_fmt(row))
+
+
+@app.command()
+def scan(
+    target: str = typer.Argument(..., help="Subnet (CIDR) or single IPv4 address."),
+) -> None:
+    """Sweep a subnet and populate the inventory with live hosts.
+
+    The wedge: `langusta scan 192.168.1.0/24`. Uses ICMP to detect live
+    hosts, consults the local ARP table to pair them with MACs, and feeds
+    each observation through the scanner-proposes-human-disposes write path.
+    """
+    from icmplib.exceptions import SocketPermissionError
+
+    from langusta.scan.orchestrator import run_scan
+
+    backend = get_backend()
+    with connect(paths.db_path()) as conn:
+        try:
+            report = asyncio.run(
+                run_scan(conn, target, platform_backend=backend)
+            )
+        except ValueError as exc:
+            typer.echo(f"error: {exc}", err=True)
+            raise typer.Exit(code=2) from exc
+        except SocketPermissionError as exc:
+            typer.echo(
+                "error: this system doesn't permit unprivileged ICMP. "
+                "Either run as root, or enable unprivileged ping:\n"
+                "  Linux: sudo sysctl -w net.ipv4.ping_group_range='0 2147483647'\n"
+                "  macOS: unprivileged ICMP is on by default — check net.inet.raw.maxdgram\n"
+                f"(underlying error: {exc})",
+                err=True,
+            )
+            raise typer.Exit(code=1) from exc
+
+    typer.echo(
+        f"Found {report.hosts_alive} devices in {report.duration_seconds:.1f}s "
+        f"({report.inserted} inserted, {report.updated} updated, "
+        f"{report.deferred} ambiguous, {report.proposed_changes} proposed changes)"
+    )
+
+
+# ---------------------------------------------------------------------------
+# review — resolve proposed_changes from the CLI
+# ---------------------------------------------------------------------------
+
+
+review_app = typer.Typer(
+    help="Review scan-proposed changes against manually-set fields.",
+    invoke_without_command=True,
+)
+
+
+@review_app.callback(invoke_without_command=True)
+def review_root(ctx: typer.Context) -> None:
+    """List all open proposed changes (when no subcommand is given)."""
+    if ctx.invoked_subcommand is not None:
+        return
+    with connect(paths.db_path()) as conn:
+        rows = pc_dal.list_open(conn)
+    if not rows:
+        typer.echo("No pending proposals.")
+        return
+    typer.echo(f"{len(rows)} pending proposal(s):")
+    for r in rows:
+        typer.echo(
+            f"  #{r.id} asset={r.asset_id} {r.field}: "
+            f"{r.current_value!r} -> {r.proposed_value!r}"
+        )
+
+
+@review_app.command("accept")
+def review_accept(pc_id: int = typer.Argument(..., help="Proposed change id.")) -> None:
+    """Apply the proposed value to the asset; flips provenance to scanned."""
+    now = datetime.now(UTC)
+    with connect(paths.db_path()) as conn:
+        try:
+            pc_dal.accept(conn, pc_id, now=now)
+        except pc_dal.AlreadyResolvedError as exc:
+            typer.echo(f"error: {exc}", err=True)
+            raise typer.Exit(code=1) from exc
+    typer.echo(f"accepted #{pc_id}")
+
+
+@review_app.command("reject")
+def review_reject(pc_id: int = typer.Argument(..., help="Proposed change id.")) -> None:
+    """Discard the proposed value; asset stays as the human set it."""
+    now = datetime.now(UTC)
+    with connect(paths.db_path()) as conn:
+        try:
+            pc_dal.reject(conn, pc_id, now=now)
+        except pc_dal.AlreadyResolvedError as exc:
+            typer.echo(f"error: {exc}", err=True)
+            raise typer.Exit(code=1) from exc
+    typer.echo(f"rejected #{pc_id}")
+
+
+app.add_typer(review_app, name="review")
