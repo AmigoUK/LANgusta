@@ -29,6 +29,7 @@ from langusta.core.identity import (
 )
 from langusta.core.provenance import FieldProvenance, FieldValue, merge_scan_result
 from langusta.db import proposed_changes as pc_dal
+from langusta.db import timeline as tl_dal
 
 # ---------------------------------------------------------------------------
 # Public types
@@ -45,6 +46,9 @@ class Observation:
     vendor: str | None = None
     detected_os: str | None = None
     device_type: str | None = None
+    # open_ports is reported through the timeline (`scan_diff` entry body);
+    # it is not a persisted column on `assets` in v1.
+    open_ports: frozenset[int] = frozenset()
 
 
 @dataclass(frozen=True, slots=True)
@@ -196,10 +200,8 @@ def _append_timeline(
     now: datetime,
     author: str,
 ) -> None:
-    conn.execute(
-        "INSERT INTO timeline_entries (asset_id, kind, body, occurred_at, author) "
-        "VALUES (?, ?, ?, ?, ?)",
-        (asset_id, kind, body, _iso(now), author),
+    tl_dal.append_entry(
+        conn, asset_id=asset_id, kind=kind, body=body, now=now, author=author,
     )
 
 
@@ -253,6 +255,15 @@ def _apply_insert(
         now=now,
         author="scanner",
     )
+    if obs.open_ports:
+        _append_timeline(
+            conn,
+            asset_id=asset_id,
+            kind="scan_diff",
+            body=f"Open ports: {', '.join(str(p) for p in sorted(obs.open_ports))}",
+            now=now,
+            author="scanner",
+        )
     return Inserted(asset_id=asset_id)
 
 
@@ -319,12 +330,15 @@ def _apply_update(
         for name, fv in applied.items()
         if existing.get(name) is None or existing[name].value != fv.value
     )
-    if visible_changes or new_mac_bound:
+    if visible_changes or new_mac_bound or obs.open_ports:
         parts: list[str] = []
         for name in visible_changes:
             parts.append(f"{name} -> {applied[name].value!r}")
         if new_mac_bound:
             parts.append(f"new MAC {obs.mac}")
+        if obs.open_ports:
+            ports_str = ", ".join(str(p) for p in sorted(obs.open_ports))
+            parts.append(f"open ports: {ports_str}")
         _append_timeline(
             conn,
             asset_id=asset_id,

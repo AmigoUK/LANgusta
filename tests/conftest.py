@@ -9,6 +9,35 @@ from pathlib import Path
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _offline_scan_enrichments(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep every test offline by default.
+
+    Scanner enrichments (rDNS, TCP probe, mDNS) return empty unless a test
+    overrides them. Tests that want real behaviour can `monkeypatch` the
+    binding back to the real function, but none do in v1.
+    """
+
+    async def empty_rdns(ips, **_):
+        return {}
+
+    async def empty_tcp(ips, **_):
+        return {}
+
+    async def empty_mdns(target_ips=None, **_):
+        return {}
+
+    monkeypatch.setattr(
+        "langusta.scan.orchestrator.resolve_many", empty_rdns, raising=False,
+    )
+    monkeypatch.setattr(
+        "langusta.scan.orchestrator.probe_ports_many", empty_tcp, raising=False,
+    )
+    monkeypatch.setattr(
+        "langusta.scan.orchestrator.mdns_discover", empty_mdns, raising=False,
+    )
+
+
 @pytest.fixture
 def tmp_langusta_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
     """Redirect ~/.langusta/ to a per-test tmp directory.

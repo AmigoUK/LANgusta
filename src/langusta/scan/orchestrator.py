@@ -16,8 +16,12 @@ from datetime import UTC, datetime
 from langusta.db import scans as scans_dal
 from langusta.db.writer import Deferred, Inserted, Observation, Updated, apply_scan_observation
 from langusta.platform.base import PlatformBackend
+from langusta.scan import oui as oui_module
 from langusta.scan.arp import arp_lookup
 from langusta.scan.icmp import PingResult, expand_target, ping_sweep
+from langusta.scan.mdns import discover as mdns_discover
+from langusta.scan.rdns import resolve_many
+from langusta.scan.tcp import probe_ports_many
 
 PingFn = Callable[[list[str]], Awaitable[list[PingResult]]]
 Clock = Callable[[], datetime]
@@ -70,13 +74,37 @@ async def run_scan(
     probes = expand_target(target)
     alive_results = await effective_ping(probes) if probes else []
     alive_ips = [r.address for r in alive_results]
+    alive_set = set(alive_ips)
 
-    arp_map = arp_lookup(set(alive_ips), backend=platform_backend)
+    arp_map = arp_lookup(alive_set, backend=platform_backend)
+
+    # Run enrichment stages concurrently against alive hosts.
+    import asyncio as _asyncio
+    rdns_task = _asyncio.create_task(resolve_many(alive_set))
+    tcp_task = _asyncio.create_task(probe_ports_many(alive_set))
+    mdns_task = _asyncio.create_task(mdns_discover(target_ips=alive_set))
+    rdns_map, tcp_map, mdns_map = await _asyncio.gather(rdns_task, tcp_task, mdns_task)
 
     inserted = updated = deferred = proposed_total = 0
 
     for ip in alive_ips:
-        obs = Observation(primary_ip=ip, mac=arp_map.get(ip))
+        mac = arp_map.get(ip)
+        hostname = rdns_map.get(ip) or mdns_map.get(ip)
+        vendor: str | None = None
+        if mac is not None:
+            try:
+                vendor = oui_module.lookup(mac)
+            except oui_module.InvalidMac:
+                vendor = None
+        open_ports = tcp_map.get(ip, frozenset())
+
+        obs = Observation(
+            primary_ip=ip,
+            hostname=hostname,
+            mac=mac,
+            vendor=vendor,
+            open_ports=open_ports,
+        )
         outcome = apply_scan_observation(conn, obs, scan_id=scan_id, now=start)
         if isinstance(outcome, Inserted):
             inserted += 1
