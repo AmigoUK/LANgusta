@@ -12,7 +12,9 @@ import sqlite3
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from pathlib import Path
 
+from langusta import backup as backup_mod
 from langusta.db import scans as scans_dal
 from langusta.db.writer import Deferred, Inserted, Observation, Updated, apply_scan_observation
 from langusta.platform.base import PlatformBackend
@@ -45,6 +47,15 @@ def _default_clock() -> datetime:
     return datetime.now(UTC)
 
 
+def _sqlite_path_for(conn: sqlite3.Connection) -> Path | None:
+    """Extract the on-disk path of the main database from a live connection."""
+    for row in conn.execute("PRAGMA database_list").fetchall():
+        if row["name"] == "main":
+            file = row["file"]
+            return Path(file) if file else None
+    return None
+
+
 async def run_scan(
     conn: sqlite3.Connection,
     target: str,
@@ -54,6 +65,7 @@ async def run_scan(
     now_fn: Clock | None = None,
     snmp_client: SnmpClient | None = None,
     snmp_community: str | None = None,
+    backups_dir: Path | None = None,
 ) -> ScanReport:
     """Run one end-to-end scan against `target`.
 
@@ -139,6 +151,15 @@ async def run_scan(
 
     end = effective_clock()
     scans_dal.finish_scan(conn, scan_id, host_count=len(alive_ips), now=end)
+
+    # Post-scan backup (spec §9). Dedupe window of 1h prevents spam during
+    # rapid scan cycles. Commit the current connection first so the backup
+    # picks up the scan's writes.
+    if backups_dir is not None:
+        conn.commit()
+        sqlite_path = _sqlite_path_for(conn)
+        if sqlite_path is not None:
+            backup_mod.write(sqlite_path, backups_dir, now=end)
 
     return ScanReport(
         scan_id=scan_id,

@@ -12,11 +12,12 @@ from datetime import UTC, datetime
 
 import typer
 
-from langusta import __version__, paths
+from langusta import __version__, backup, paths
 from langusta.crypto import master_password as mp
 from langusta.crypto.vault import Vault
 from langusta.db import assets as assets_dal
 from langusta.db import credentials as cred_dal
+from langusta.db import export as export_mod
 from langusta.db import proposed_changes as pc_dal
 from langusta.db.connection import connect
 from langusta.db.migrate import latest_schema_version, migrate
@@ -246,6 +247,7 @@ def scan(
                     conn, target, platform_backend=backend,
                     snmp_client=snmp_client,
                     snmp_community=snmp_community,
+                    backups_dir=paths.backups_dir(),
                 )
             )
         except ValueError as exc:
@@ -406,3 +408,99 @@ def cred_rm(cred_id: int = typer.Argument(..., help="Credential id to remove."))
 
 
 app.add_typer(cred_app, name="cred")
+
+
+# ---------------------------------------------------------------------------
+# backup — snapshot + retention
+# ---------------------------------------------------------------------------
+
+
+backup_app = typer.Typer(help="Manage LANgusta SQLite snapshots.")
+
+
+@backup_app.command("now")
+def backup_now() -> None:
+    """Write an immediate snapshot (ignores the 1h dedup window)."""
+    now = datetime.now(UTC)
+    result = backup.write(
+        paths.db_path(), paths.backups_dir(), now=now, dedupe_window_hours=0,
+    )
+    if result is None:
+        typer.echo("no backup written (source DB missing)")
+        raise typer.Exit(code=1)
+    typer.echo(f"wrote {result}")
+
+
+@backup_app.command("list")
+def backup_list() -> None:
+    """List all snapshots newest-first."""
+    snapshots = backup.list_backups(paths.backups_dir())
+    if not snapshots:
+        typer.echo("No backups.")
+        return
+    for b in snapshots:
+        typer.echo(f"{b.stamp.isoformat()}  {b.path}")
+
+
+@backup_app.command("verify")
+def backup_verify(
+    path: str = typer.Argument(..., help="Backup file path to check."),
+) -> None:
+    """PRAGMA integrity_check against a backup."""
+    from pathlib import Path
+    ok = backup.verify(Path(path))
+    typer.echo("ok" if ok else "CORRUPT")
+    if not ok:
+        raise typer.Exit(code=1)
+
+
+@backup_app.command("prune")
+def backup_prune(
+    keep: int = typer.Option(30, "--keep", help="How many snapshots to keep."),
+) -> None:
+    """Delete all but the most recent --keep snapshots."""
+    removed = backup.prune(paths.backups_dir(), keep=keep)
+    typer.echo(f"removed {removed} snapshot(s)")
+
+
+app.add_typer(backup_app, name="backup")
+
+
+# ---------------------------------------------------------------------------
+# export / import
+# ---------------------------------------------------------------------------
+
+
+@app.command("export")
+def export_cmd(
+    output: str | None = typer.Option(
+        None, "--output", "-o", help="Write to file instead of stdout.",
+    ),
+) -> None:
+    """Export the user-owned asset data as JSON (credentials excluded)."""
+    import json as _json
+    with connect(paths.db_path()) as conn:
+        dump = export_mod.export_to_dict(conn)
+    payload = _json.dumps(dump, indent=2, sort_keys=True)
+    if output:
+        from pathlib import Path as _Path
+        _Path(output).write_text(payload)
+    else:
+        typer.echo(payload)
+
+
+@app.command("import")
+def import_cmd(
+    path: str = typer.Argument(..., help="JSON dump produced by `langusta export`."),
+) -> None:
+    """Import a previously-exported JSON dump into this (empty) DB."""
+    import json as _json
+    from pathlib import Path as _Path
+    data = _json.loads(_Path(path).read_text())
+    with connect(paths.db_path()) as conn:
+        try:
+            export_mod.import_from_dict(conn, data)
+        except export_mod.ImportRefused as exc:
+            typer.echo(f"error: {exc}", err=True)
+            raise typer.Exit(code=1) from exc
+    typer.echo(f"imported {path}")
