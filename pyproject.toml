@@ -1,0 +1,95 @@
+[project]
+name = "langusta"
+version = "0.0.1"
+description = "Local-first TUI asset registry + network scanner + lightweight monitoring for small networks (<=250 devices)."
+readme = "README.md"
+license = { text = "AGPL-3.0-or-later" }
+requires-python = ">=3.12"
+authors = [{ name = "AmigoUK", email = "coders@attv.uk" }]
+keywords = ["network", "scanner", "monitoring", "asset-registry", "cmdb", "tui", "self-hosted"]
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "Environment :: Console :: Curses",
+    "Intended Audience :: System Administrators",
+    "License :: OSI Approved :: GNU Affero General Public License v3 or later (AGPLv3+)",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: System :: Networking :: Monitoring",
+    "Topic :: System :: Systems Administration",
+]
+dependencies = [
+    "textual>=0.80",
+    "typer>=0.12",
+    "icmplib>=3.0",
+    "pysnmp-lextudio>=6.1",
+    "zeroconf>=0.130",
+    "cryptography>=42",
+    "argon2-cffi>=23",
+    "apscheduler>=3.10,<4",
+    "httpx>=0.27",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio>=0.23",
+    "hypothesis>=6.100",
+    "pytest-textual-snapshot>=1.0",
+    "ruff>=0.5",
+]
+
+[project.scripts]
+langusta = "langusta.cli:app"
+
+[project.urls]
+Homepage = "https://github.com/AmigoUK/LANgusta"
+Source = "https://github.com/AmigoUK/LANgusta"
+Issues = "https://github.com/AmigoUK/LANgusta/issues"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/langusta"]
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+pythonpath = ["src"]
+asyncio_mode = "auto"
+markers = [
+    "slow: slow tests, opt-in (e.g. fresh-install CI smoke)",
+    "integration: tests requiring external resources (opt-in)",
+]
+filterwarnings = [
+    "error",
+    "ignore::DeprecationWarning:apscheduler.*",
+    "ignore::DeprecationWarning:pysnmp.*",
+]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes
+    "I",    # isort
+    "B",    # bugbear
+    "UP",   # pyupgrade
+    "N",    # naming
+    "SIM",  # simplify
+    "RUF",  # ruff-specific
+]
+ignore = [
+    "E501",  # line length (ruff format handles it)
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["N802", "N803"]  # allow snake_case test names that mirror public API
