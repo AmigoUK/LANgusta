@@ -7,7 +7,7 @@ import subprocess
 from collections.abc import Iterable
 from pathlib import Path
 
-from langusta.platform.base import ArpEntry
+from langusta.platform.base import ArpEntry, InstallRecipe
 
 
 class LinuxBackend:
@@ -52,3 +52,39 @@ class LinuxBackend:
     def enforce_private(self, path: Path) -> None:
         mode = 0o700 if path.is_dir() else 0o600
         os.chmod(path, mode)
+
+    def daemon_install_recipe(self, *, exec_path: str) -> InstallRecipe:
+        """Render a systemd user unit for the monitor daemon."""
+        home = Path(os.path.expanduser("~"))
+        install_path = home / ".config" / "systemd" / "user" / "langusta-monitor.service"
+        content = _SYSTEMD_UNIT_TEMPLATE.format(exec_path=exec_path)
+        start_hint = (
+            "systemctl --user daemon-reload && "
+            "systemctl --user enable --now langusta-monitor.service"
+        )
+        return InstallRecipe(
+            manager="systemd-user",
+            install_path=install_path,
+            content=content,
+            start_hint=start_hint,
+        )
+
+
+_SYSTEMD_UNIT_TEMPLATE = """\
+[Unit]
+Description=LANgusta monitor daemon
+Documentation=https://github.com/AmigoUK/LANgusta
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart={exec_path} monitor daemon --foreground
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target
+"""

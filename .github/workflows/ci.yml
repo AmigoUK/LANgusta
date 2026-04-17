@@ -44,9 +44,21 @@ jobs:
       - name: CLI smoke (--version)
         run: uv run langusta --version
 
-      - name: CLI smoke (init)
+      - name: CLI smoke (end-to-end walkthrough)
         env:
           LANGUSTA_HOME: ${{ runner.temp }}/langusta
+          LANGUSTA_MASTER_PASSWORD: ci-smoke-master-password-long-enough
+          LANGUSTA_CRED_SECRET: ci-smoke-community-placeholder
         run: |
           uv run langusta init
           test -f "$LANGUSTA_HOME/db.sqlite"
+          uv run langusta add --hostname ci-router --ip 10.0.0.1 --mac aa:bb:cc:dd:ee:ff
+          uv run langusta list
+          uv run langusta cred add --label ci-snmp --kind snmp_v2c
+          uv run langusta cred list
+          uv run langusta backup now
+          uv run langusta export --output "$LANGUSTA_HOME/dump.json"
+          test -s "$LANGUSTA_HOME/dump.json"
+          uv run langusta monitor enable --asset 1 --kind icmp --interval 60
+          uv run langusta monitor list
+          uv run langusta monitor install-service --dry-run

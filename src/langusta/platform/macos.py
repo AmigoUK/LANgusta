@@ -8,7 +8,7 @@ import subprocess
 from collections.abc import Iterable
 from pathlib import Path
 
-from langusta.platform.base import ArpEntry
+from langusta.platform.base import ArpEntry, InstallRecipe
 
 # Example:
 #   router.local (192.168.1.1) at aa:bb:cc:dd:ee:ff on en0 ifscope [ethernet]
@@ -50,3 +50,44 @@ class MacOSBackend:
     def enforce_private(self, path: Path) -> None:
         mode = 0o700 if path.is_dir() else 0o600
         os.chmod(path, mode)
+
+    def daemon_install_recipe(self, *, exec_path: str) -> InstallRecipe:
+        """Render a launchd user-agent plist for the monitor daemon."""
+        home = Path(os.path.expanduser("~"))
+        label = "uk.attv.langusta.monitor"
+        install_path = home / "Library" / "LaunchAgents" / f"{label}.plist"
+        content = _LAUNCHD_PLIST_TEMPLATE.format(label=label, exec_path=exec_path)
+        start_hint = f"launchctl load {install_path}"
+        return InstallRecipe(
+            manager="launchd",
+            install_path=install_path,
+            content=content,
+            start_hint=start_hint,
+        )
+
+
+_LAUNCHD_PLIST_TEMPLATE = """\
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>{label}</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>{exec_path}</string>
+        <string>monitor</string>
+        <string>daemon</string>
+        <string>--foreground</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>/tmp/langusta-monitor.out</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/langusta-monitor.err</string>
+</dict>
+</plist>
+"""

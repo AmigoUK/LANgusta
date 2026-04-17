@@ -12,6 +12,7 @@ recipes.
 from __future__ import annotations
 
 from collections.abc import Iterable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
@@ -25,6 +26,16 @@ class NotImplementedCapability(NotImplementedError):  # noqa: N818 — inherits 
     Carry the recommendation ("use WSL2") in the message so users get a useful
     error rather than a cryptic traceback.
     """
+
+
+@dataclass(frozen=True, slots=True)
+class InstallRecipe:
+    """Where to write a service manager unit and what to tell the user after."""
+
+    manager: str         # 'systemd-user' | 'launchd'
+    install_path: Path   # absolute path the caller writes to
+    content: str         # rendered unit / plist contents
+    start_hint: str      # post-install one-liner to start the service
 
 
 @runtime_checkable
@@ -46,5 +57,14 @@ class PlatformBackend(Protocol):
         - Directories: mode 0700.
         Raises `NotImplementedCapability` on backends where enforcing this is
         unsafe (Windows without ACL handling).
+        """
+        ...
+
+    def daemon_install_recipe(self, *, exec_path: str) -> InstallRecipe:
+        """Return the service-manager recipe for the current OS.
+
+        Linux → systemd user unit at ~/.config/systemd/user/.
+        macOS → launchd plist at ~/Library/LaunchAgents/.
+        Windows → raises NotImplementedCapability.
         """
         ...

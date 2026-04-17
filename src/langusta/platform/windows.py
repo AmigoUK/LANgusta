@@ -10,7 +10,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from pathlib import Path
 
-from langusta.platform.base import ArpEntry, NotImplementedCapability
+from langusta.platform.base import ArpEntry, InstallRecipe, NotImplementedCapability
 
 _WSL2_HINT = (
     "Windows native is not supported in LANgusta v1; please run under WSL2. "
@@ -23,4 +23,7 @@ class WindowsStubBackend:
         raise NotImplementedCapability(_WSL2_HINT)
 
     def enforce_private(self, path: Path) -> None:
+        raise NotImplementedCapability(_WSL2_HINT)
+
+    def daemon_install_recipe(self, *, exec_path: str) -> InstallRecipe:
         raise NotImplementedCapability(_WSL2_HINT)

@@ -1,6 +1,6 @@
 [project]
 name = "langusta"
-version = "0.0.1"
+version = "0.1.0rc1"
 description = "Local-first TUI asset registry + network scanner + lightweight monitoring for small networks (<=250 devices)."
 readme = "README.md"
 license = { text = "AGPL-3.0-or-later" }
@@ -8,16 +8,19 @@ requires-python = ">=3.12"
 authors = [{ name = "AmigoUK", email = "coders@attv.uk" }]
 keywords = ["network", "scanner", "monitoring", "asset-registry", "cmdb", "tui", "self-hosted"]
 classifiers = [
-    "Development Status :: 2 - Pre-Alpha",
+    "Development Status :: 3 - Alpha",
     "Environment :: Console :: Curses",
     "Intended Audience :: System Administrators",
+    "Intended Audience :: Information Technology",
     "License :: OSI Approved :: GNU Affero General Public License v3 or later (AGPLv3+)",
     "Operating System :: POSIX :: Linux",
     "Operating System :: MacOS",
     "Programming Language :: Python :: 3 :: Only",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Topic :: System :: Networking :: Monitoring",
     "Topic :: System :: Systems Administration",
+    "Typing :: Typed",
 ]
 dependencies = [
     "textual>=0.80",

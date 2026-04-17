@@ -8,9 +8,78 @@ Pre-1.0 versions may introduce breaking changes on any minor bump.
 
 ## [Unreleased]
 
-### Added
-- Initial v1 functional and technical specs (`docs/specs/`).
-- Architecture Decision Records for the five open technical questions (`docs/adr/`).
-- Synthesized v1 development plan (`docs/development-plan.md`).
+## [0.1.0rc1] — 2026-04-17
 
-[Unreleased]: https://github.com/AmigoUK/LANgusta/commits/main
+First alpha release candidate. Delivers the v1 Must-Have scope from the [development plan](docs/development-plan.md). Ready for early users who are comfortable reporting issues.
+
+### Added
+
+**Asset registry (M1)**
+- `Asset` dataclass + DAL (`db.assets`) with `insert_manual` / `list_all` / `get_by_id` / `get_provenance`.
+- Per-field provenance via `core.provenance.merge_scan_result` (stdlib-only, proved by 5 Hypothesis property tests).
+- MAC normalisation to lowercase and global UNIQUE.
+- CLI: `langusta add` / `langusta list` / `langusta ui`.
+
+**Network scanner (M2 + M3)**
+- `scan/icmp.py`, `scan/arp.py`, `scan/rdns.py`, `scan/tcp.py` (45-port curated top list), `scan/mdns.py`, `scan/oui.py` (packaged IEEE subset).
+- Composite identity resolution (`core.identity.resolve`) returning `Insert | Update | Ambiguous`. The Lansweeper-failure rule (MAC-says-A, hostname-says-B → never silent merge) is Hypothesis-tested.
+- `db.writer.apply_scan_observation` — the single atomic write path for scan results. Merges via `merge_scan_result`; conflicts with `manual`/`imported` fields become `proposed_changes` rows.
+- Orchestrator runs ICMP → ARP → (rDNS ∥ TCP ∥ mDNS ∥ SNMP) concurrently.
+
+**Asset detail + timeline (M3)**
+- `db/timeline.py` insert-only DAL with `append_entry` and `append_correction_of`. SQL triggers on `timeline_entries` reject UPDATE and DELETE at the storage layer.
+- Textual `AssetDetailScreen` with timeline widget, `JournalEditorScreen` modal (Ctrl+S to save a manual note).
+
+**Universal search + review queue (M4)**
+- Migration 002 adds an FTS5 virtual table over 8 asset text fields, kept in sync via INSERT/UPDATE/DELETE triggers.
+- `db/search.py::search()` — FTS5 prefix matching + MAC substring LIKE.
+- Textual `SearchScreen` (live input → DataTable results) and `ReviewQueueScreen` (accept / reject with disposition timeline entries).
+- Inventory row-selection now pushes the asset detail screen; `/` opens search; `r` opens the review queue.
+
+**Credential vault + SNMP (M5)**
+- `crypto/vault.py` (AES-256-GCM) + `crypto/kdf.py` (Argon2id, `time_cost>=2`, `memory_cost>=32 MiB`).
+- `crypto/master_password.py` — setup / unlock with a stored verifier; wrong password raises `WrongMasterPassword`.
+- `db/credentials.py` — list_info never exposes secrets; `get_secret` is the sole decryption path.
+- SNMP subsystem: `SnmpClient` Protocol + `PysnmpBackend` (pysnmp-lextudio) + `TranscriptBackend` (test fixtures).
+- Orchestrator accepts `--snmp <label>` and populates `detected_os` from sysDescr without failing on unresponsive hosts.
+- 9-test secret-hygiene suite proves the secret appears in zero stdout/stderr/log/db-bytes surfaces.
+
+**Backups + portability (M6)**
+- `backup.py` — online-backup API with 1h dedup window, `list_backups` (newest-first), `prune(keep=N)`, `verify` via `PRAGMA integrity_check`.
+- `db/export.py` — JSON envelope with `export_format_version` + `schema_version`. Credentials excluded by default; internal tables (FTS, `_migrations`) skipped (rebuilt on import).
+- Orchestrator writes a post-scan backup automatically when `backups_dir` is set.
+- CLI: `backup now/list/verify/prune`, `export`, `import`.
+
+**Monitoring (M7)**
+- Migration 005 adds `monitoring_checks` + `check_results`. Heartbeat stored at `meta.daemon_heartbeat`.
+- `monitor/checks/` — ICMP / TCP / HTTP implementations; each returns `CheckResult` and never raises.
+- `monitor/runner.py::run_once` — finds due checks, dispatches concurrently, records results, writes `monitor_event` timeline entries on state transitions.
+- CLI: `monitor enable/disable/list/run/status`.
+
+**Release hardening (M8)**
+- `platform/linux.py` and `platform/macos.py` ship `daemon_install_recipe()` returning an `InstallRecipe` (systemd user unit / launchd plist). Windows raises `NotImplementedCapability`.
+- CLI: `langusta monitor install-service` writes the unit or plist to the correct XDG / LaunchAgents path; `--dry-run` prints; `--force` overwrites.
+- CLI: `langusta monitor daemon --foreground` — the supervisor-friendly loop (refuses to background itself, per ADR-0002).
+- README rewritten with install tabs; `docs/install.md`, `docs/upgrading.md`, `docs/daemon.md` added.
+
+**Infrastructure (M0 throughout)**
+- `db/connection.py` single-helper applying WAL + synchronous=NORMAL + foreign_keys=ON + busy_timeout=5000 + temp_store=MEMORY on every open.
+- `db/migrate.py` hand-rolled migration runner — forward-only, checksum-immutable, pre-migration-backup mandatory.
+- `scripts/lint_boundaries.py` — CI-enforced architectural lints: core/ is stdlib-only, sys.platform branches live only in platform/, raw SQL lives only in db/.
+- Schema reaches v5 at 0.1.0-rc1.
+
+### Test count
+
+357 tests (including 11 Textual snapshots and 6 Hypothesis property tests) passing on Linux and macOS CI.
+
+### Known limitations (deferred)
+
+- Native Windows support — WSL2 is the v1 path (ADR-0004).
+- Full detached daemon with PID file + log rotation — the service-manager does this; `monitor daemon --foreground` is the entry point.
+- TUI footer heartbeat indicator + `monitor_config` screen polish.
+- SNMP v3 authPriv, SNMP-OID check kind, SSH-command check kind.
+- Lansweeper CSV / NetBox API import (the competitor on-ramp) — first post-v1 target.
+- External secret-store integration (1Password CLI / Bitwarden CLI / Vault).
+
+[Unreleased]: https://github.com/AmigoUK/LANgusta/compare/0.1.0rc1...HEAD
+[0.1.0rc1]: https://github.com/AmigoUK/LANgusta/releases/tag/0.1.0rc1

@@ -592,6 +592,96 @@ def monitor_run() -> None:
     )
 
 
+@monitor_app.command("install-service")
+def monitor_install_service(
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Print the unit/plist instead of writing it.",
+    ),
+    force: bool = typer.Option(
+        False, "--force", help="Overwrite an existing file.",
+    ),
+) -> None:
+    """Render a systemd user unit (Linux) or launchd plist (macOS) that runs
+    `langusta monitor daemon --foreground`.
+
+    The file is placed under the user's XDG / LaunchAgents directory and a
+    `systemctl --user` (or `launchctl`) invocation is printed as the next
+    step — LANgusta never runs them for you per ADR-0004.
+    """
+    import shutil
+    import sys as _sys
+
+    from langusta.platform.base import NotImplementedCapability
+
+    backend = get_backend()
+    # Resolve the binary path so the generated unit references an absolute
+    # command line rather than relying on PATH.
+    exec_path = shutil.which("langusta") or _sys.argv[0]
+    try:
+        recipe = backend.daemon_install_recipe(exec_path=exec_path)
+    except NotImplementedCapability as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+
+    if dry_run:
+        typer.echo(recipe.content)
+        typer.echo(f"# Would write to: {recipe.install_path}")
+        typer.echo(f"# Post-install: {recipe.start_hint}")
+        return
+
+    if recipe.install_path.exists() and not force:
+        typer.echo(
+            f"error: {recipe.install_path} already exists — use --force to overwrite",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+
+    recipe.install_path.parent.mkdir(parents=True, exist_ok=True)
+    recipe.install_path.write_text(recipe.content)
+    typer.echo(f"wrote {recipe.install_path}")
+    typer.echo(f"next: {recipe.start_hint}")
+
+
+@monitor_app.command("daemon")
+def monitor_daemon(
+    foreground: bool = typer.Option(
+        False, "--foreground",
+        help="Run the loop in the foreground (for systemd / launchd).",
+    ),
+    interval: int = typer.Option(
+        60, "--interval", help="Seconds between monitor cycles.",
+    ),
+) -> None:
+    """Run the monitor loop. Without `--foreground`, this is a no-op — use
+    the service-manager (systemd / launchd) via `monitor install-service`
+    instead of backgrounding LANgusta itself (ADR-0002)."""
+    import time as _time
+
+    from langusta.monitor.runner import run_once
+
+    if not foreground:
+        typer.echo(
+            "daemon without --foreground is intentionally a no-op; use "
+            "`langusta monitor install-service` and let systemd/launchd "
+            "supervise. Pass --foreground to run in this process.",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+
+    typer.echo(f"langusta monitor daemon — cycle every {interval}s (Ctrl+C to stop)")
+    while True:
+        now = datetime.now(UTC)
+        with connect(paths.db_path()) as conn:
+            summary = asyncio.run(run_once(conn, now=now))
+        typer.echo(
+            f"[{now.isoformat(timespec='seconds')}] "
+            f"executed {summary.executed} "
+            f"({summary.ok_count} ok, {summary.fail_count} fail, "
+            f"{summary.transitions} transitions)"
+        )
+        _time.sleep(interval)
+
+
 @monitor_app.command("status")
 def monitor_status() -> None:
     """Show daemon heartbeat freshness."""
