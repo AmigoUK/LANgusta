@@ -21,6 +21,7 @@ from langusta.db import export as export_mod
 from langusta.db import import_lansweeper as import_lansweeper_mod
 from langusta.db import import_netbox as import_netbox_mod
 from langusta.db import monitoring as mon_dal
+from langusta.db import notifications as notif_dal
 from langusta.db import proposed_changes as pc_dal
 from langusta.db.connection import connect
 from langusta.db.migrate import latest_schema_version, migrate
@@ -642,8 +643,11 @@ def monitor_run() -> None:
     from langusta.monitor.runner import run_once
 
     now = datetime.now(UTC)
+    logfile = paths.langusta_home() / "notifications.log"
     with connect(paths.db_path()) as conn:
-        summary = asyncio.run(run_once(conn, now=now))
+        summary = asyncio.run(
+            run_once(conn, now=now, notifications_logfile=logfile),
+        )
     typer.echo(
         f"executed {summary.executed} check(s) "
         f"({summary.ok_count} ok, {summary.fail_count} fail, "
@@ -728,10 +732,13 @@ def monitor_daemon(
         raise typer.Exit(code=2)
 
     typer.echo(f"langusta monitor daemon — cycle every {interval}s (Ctrl+C to stop)")
+    logfile = paths.langusta_home() / "notifications.log"
     while True:
         now = datetime.now(UTC)
         with connect(paths.db_path()) as conn:
-            summary = asyncio.run(run_once(conn, now=now))
+            summary = asyncio.run(
+                run_once(conn, now=now, notifications_logfile=logfile),
+            )
         typer.echo(
             f"[{now.isoformat(timespec='seconds')}] "
             f"executed {summary.executed} "
@@ -757,3 +764,127 @@ def monitor_status() -> None:
 
 
 app.add_typer(monitor_app, name="monitor")
+
+
+# ---------------------------------------------------------------------------
+# notify — notification sinks (log always-on; webhook + SMTP opt-in)
+# ---------------------------------------------------------------------------
+
+
+notify_app = typer.Typer(help="Configure notification sinks for monitor events.")
+
+
+@notify_app.command("add-webhook")
+def notify_add_webhook(
+    label: str = typer.Option(..., "--label", help="Unique name for this sink."),
+    url: str = typer.Option(..., "--url", help="HTTPS endpoint accepting POST."),
+) -> None:
+    """Register a webhook sink. Monitor events POST JSON to this URL."""
+    now = datetime.now(UTC)
+    with connect(paths.db_path()) as conn:
+        try:
+            sid = notif_dal.create(
+                conn, label=label, kind="webhook",
+                config={"url": url}, now=now,
+            )
+        except notif_dal.DuplicateLabel as exc:
+            typer.echo(f"error: {exc}", err=True)
+            raise typer.Exit(code=1) from exc
+    typer.echo(f"added webhook sink id={sid} label={label}")
+
+
+@notify_app.command("add-smtp")
+def notify_add_smtp(
+    label: str = typer.Option(..., "--label", help="Unique name for this sink."),
+    host: str = typer.Option(..., "--host"),
+    port: int = typer.Option(..., "--port"),
+    sender: str = typer.Option(..., "--from", help="From: address."),
+    recipient: str = typer.Option(..., "--to", help="To: address."),
+    starttls: bool = typer.Option(False, "--starttls"),
+) -> None:
+    """Register an SMTP sink. Credentials (if any) go in env vars
+    LANGUSTA_SMTP_USERNAME / LANGUSTA_SMTP_PASSWORD at send time."""
+    now = datetime.now(UTC)
+    config = {
+        "host": host, "port": port,
+        "from": sender, "to": recipient,
+        "starttls": starttls,
+    }
+    with connect(paths.db_path()) as conn:
+        try:
+            sid = notif_dal.create(
+                conn, label=label, kind="smtp", config=config, now=now,
+            )
+        except notif_dal.DuplicateLabel as exc:
+            typer.echo(f"error: {exc}", err=True)
+            raise typer.Exit(code=1) from exc
+    typer.echo(f"added smtp sink id={sid} label={label}")
+
+
+@notify_app.command("list")
+def notify_list() -> None:
+    """List configured notification sinks."""
+    with connect(paths.db_path()) as conn:
+        rows = notif_dal.list_all(conn)
+    if not rows:
+        typer.echo("No notification sinks configured.")
+        typer.echo(
+            "The built-in log file at ~/.langusta/notifications.log is "
+            "always on regardless of this list."
+        )
+        return
+    for s in rows:
+        status = "enabled" if s.enabled else "DISABLED"
+        typer.echo(f"id={s.id}  {s.label}  {s.kind}  {status}")
+
+
+@notify_app.command("rm")
+def notify_rm(
+    sink_id: int = typer.Argument(..., help="Sink id to remove."),
+) -> None:
+    with connect(paths.db_path()) as conn:
+        notif_dal.delete(conn, sink_id)
+    typer.echo(f"removed sink id={sink_id}")
+
+
+@notify_app.command("disable")
+def notify_disable(
+    sink_id: int = typer.Argument(..., help="Sink id to disable."),
+) -> None:
+    with connect(paths.db_path()) as conn:
+        notif_dal.disable(conn, sink_id)
+    typer.echo(f"disabled sink id={sink_id}")
+
+
+@notify_app.command("test")
+def notify_test(
+    sink_id: int = typer.Argument(..., help="Sink id to fire a test event at."),
+) -> None:
+    """Fire a synthetic failure+recovery event at one sink."""
+    from langusta.monitor.notifications import (
+        _SENDERS,
+        MonitorEvent,
+    )
+
+    with connect(paths.db_path()) as conn:
+        rows = [s for s in notif_dal.list_all(conn) if s.id == sink_id]
+    if not rows:
+        typer.echo(f"error: no sink with id={sink_id}", err=True)
+        raise typer.Exit(code=1)
+    sink = rows[0]
+    sender = _SENDERS.get(sink.kind)
+    if sender is None:
+        typer.echo(f"error: no sender for kind={sink.kind}", err=True)
+        raise typer.Exit(code=1)
+    event = MonitorEvent(
+        asset_id=0, asset_hostname="langusta-test", asset_ip="127.0.0.1",
+        kind="failure", check_kind="test", detail="synthetic test event",
+        occurred_at=datetime.now(UTC),
+    )
+    ok = asyncio.run(sender(sink.config, event))
+    typer.echo(f"sink {sink.label!r}: {'ok' if ok else 'FAILED'}")
+    if not ok:
+        raise typer.Exit(code=1)
+
+
+app.add_typer(notify_app, name="notify")

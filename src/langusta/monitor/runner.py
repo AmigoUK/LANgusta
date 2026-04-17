@@ -19,14 +19,18 @@ import asyncio
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 
 from langusta.db import assets as assets_dal
 from langusta.db import monitoring as mon_dal
+from langusta.db import notifications as notif_dal
 from langusta.db import timeline as tl_dal
 from langusta.monitor.checks.base import Check, CheckResult
 from langusta.monitor.checks.http import HttpCheck
 from langusta.monitor.checks.icmp import IcmpCheck
 from langusta.monitor.checks.tcp import TcpCheck
+from langusta.monitor.notifications import MonitorEvent
+from langusta.monitor.notifications import dispatch as dispatch_event
 
 DEFAULT_REGISTRY: dict[str, Check] = {
     "icmp": IcmpCheck(),
@@ -48,9 +52,14 @@ async def run_once(
     *,
     now: datetime,
     check_registry: dict[str, Check] | None = None,
+    notifications_logfile: Path | None = None,
 ) -> RunSummary:
     registry = check_registry if check_registry is not None else DEFAULT_REGISTRY
     due = mon_dal.list_due(conn, now=now)
+
+    # Load sinks up-front so in-flight inserts don't affect this cycle's
+    # notification targets.
+    sinks = notif_dal.list_all(conn, enabled_only=True)
 
     # Dispatch all due checks concurrently.
     tasks = []
@@ -58,7 +67,13 @@ async def run_once(
         impl = registry.get(check.kind)
         if impl is None:
             continue
-        tasks.append(_run_one(check, impl, conn, now))
+        tasks.append(
+            _run_one(
+                check, impl, conn, now,
+                sinks=sinks,
+                notifications_logfile=notifications_logfile,
+            )
+        )
     outcomes = await asyncio.gather(*tasks) if tasks else []
 
     mon_dal.set_heartbeat(conn, now=now)
@@ -85,6 +100,9 @@ async def _run_one(
     impl: Check,
     conn: sqlite3.Connection,
     now: datetime,
+    *,
+    sinks: list,
+    notifications_logfile: Path | None,
 ) -> _Outcome:
     asset = assets_dal.get_by_id(conn, check.asset_id)
     target = check.target or (asset.primary_ip if asset is not None else None)
@@ -117,6 +135,7 @@ async def _run_one(
     )
 
     transitioned = False
+    became_ok = False
     # First result for a check (prior_status=None) counts as a transition
     # only when it's a failure — we don't spam "came up" entries for every
     # newly-enabled check that happens to be reachable.
@@ -125,7 +144,20 @@ async def _run_one(
         _write_monitor_event(conn, check, result, now, became_ok=False)
     elif prior_status == "fail" and result.status == "ok":
         transitioned = True
+        became_ok = True
         _write_monitor_event(conn, check, result, now, became_ok=True)
+
+    if transitioned and notifications_logfile is not None:
+        event = MonitorEvent(
+            asset_id=check.asset_id,
+            asset_hostname=asset.hostname if asset is not None else None,
+            asset_ip=target,
+            kind="recovery" if became_ok else "failure",
+            check_kind=check.kind,
+            detail=result.detail,
+            occurred_at=now,
+        )
+        await dispatch_event(event, sinks=sinks, logfile_path=notifications_logfile)
 
     return _Outcome(status=result.status, transitioned=transitioned)
 
