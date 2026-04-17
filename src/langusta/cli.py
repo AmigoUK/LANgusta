@@ -7,16 +7,40 @@ M1: add, list
 from __future__ import annotations
 
 import asyncio
+import os
 from datetime import UTC, datetime
 
 import typer
 
 from langusta import __version__, paths
+from langusta.crypto import master_password as mp
+from langusta.crypto.vault import Vault
 from langusta.db import assets as assets_dal
+from langusta.db import credentials as cred_dal
 from langusta.db import proposed_changes as pc_dal
 from langusta.db.connection import connect
 from langusta.db.migrate import latest_schema_version, migrate
 from langusta.platform import get_backend
+
+
+def _get_master_password() -> str:
+    env = os.environ.get("LANGUSTA_MASTER_PASSWORD")
+    if env:
+        return env
+    return typer.prompt("Master password", hide_input=True)
+
+
+def _unlock_vault() -> Vault:
+    password = _get_master_password()
+    with connect(paths.db_path()) as conn:
+        try:
+            return mp.unlock(conn, password=password)
+        except mp.WrongMasterPassword as exc:
+            typer.echo(f"error: {exc}", err=True)
+            raise typer.Exit(code=1) from exc
+        except RuntimeError as exc:
+            typer.echo(f"error: {exc}", err=True)
+            raise typer.Exit(code=1) from exc
 
 app = typer.Typer(
     name="langusta",
@@ -53,8 +77,8 @@ def main(
 def init() -> None:
     """Create ~/.langusta/ and the SQLite database with the latest schema.
 
-    Idempotent — safe to re-run. Applies pending migrations if the DB exists
-    at a prior schema version.
+    On first run, prompts for the master password (or reads
+    LANGUSTA_MASTER_PASSWORD). Idempotent — safe to re-run.
     """
     backend = get_backend()
     home = paths.langusta_home()
@@ -66,9 +90,17 @@ def init() -> None:
 
     migrate(db, backups_dir=backups)
 
-    # Lock down permissions *after* the file exists. Directories first, then
-    # the DB file, so WAL sidecars created during migrate() inherit a tight
-    # parent dir.
+    # Set up the master password on first init.
+    with connect(db) as conn:
+        if not mp.is_set(conn):
+            password = _get_master_password()
+            try:
+                mp.setup(conn, password=password, now=datetime.now(UTC))
+            except ValueError as exc:
+                typer.echo(f"error: {exc}", err=True)
+                raise typer.Exit(code=1) from exc
+
+    # Lock down permissions *after* the file exists.
     backend.enforce_private(home)
     backend.enforce_private(backups)
     backend.enforce_private(db)
@@ -167,22 +199,54 @@ def list_assets() -> None:
 @app.command()
 def scan(
     target: str = typer.Argument(..., help="Subnet (CIDR) or single IPv4 address."),
+    snmp: str | None = typer.Option(
+        None, "--snmp",
+        help="Credential label (snmp_v2c) to enrich hosts with sysDescr.",
+    ),
 ) -> None:
     """Sweep a subnet and populate the inventory with live hosts.
 
     The wedge: `langusta scan 192.168.1.0/24`. Uses ICMP to detect live
     hosts, consults the local ARP table to pair them with MACs, and feeds
     each observation through the scanner-proposes-human-disposes write path.
+
+    `--snmp <label>` uses the named SNMP v2c credential to enrich hosts
+    with sysDescr; hosts that don't respond are silently skipped.
     """
     from icmplib.exceptions import SocketPermissionError
 
     from langusta.scan.orchestrator import run_scan
+    from langusta.scan.snmp.pysnmp_backend import PysnmpBackend
 
     backend = get_backend()
+    snmp_client = None
+    snmp_community: str | None = None
+    if snmp is not None:
+        vault = _unlock_vault()
+        with connect(paths.db_path()) as conn:
+            info = cred_dal.get_by_label(conn, snmp)
+            if info is None:
+                typer.echo(f"error: no credential with label {snmp!r}", err=True)
+                raise typer.Exit(code=1)
+            if info.kind != "snmp_v2c":
+                typer.echo(
+                    f"error: credential {snmp!r} is {info.kind}, "
+                    "only snmp_v2c is supported in v1",
+                    err=True,
+                )
+                raise typer.Exit(code=2)
+            secret = cred_dal.get_secret(conn, credential_id=info.id, vault=vault)
+        snmp_community = secret.decode("utf-8")
+        snmp_client = PysnmpBackend()
+
     with connect(paths.db_path()) as conn:
         try:
             report = asyncio.run(
-                run_scan(conn, target, platform_backend=backend)
+                run_scan(
+                    conn, target, platform_backend=backend,
+                    snmp_client=snmp_client,
+                    snmp_community=snmp_community,
+                )
             )
         except ValueError as exc:
             typer.echo(f"error: {exc}", err=True)
@@ -261,3 +325,84 @@ def review_reject(pc_id: int = typer.Argument(..., help="Proposed change id.")) 
 
 
 app.add_typer(review_app, name="review")
+
+
+# ---------------------------------------------------------------------------
+# cred — encrypted credential management
+# ---------------------------------------------------------------------------
+
+
+cred_app = typer.Typer(
+    help="Manage encrypted credentials (SNMP communities, SSH keys, API tokens).",
+    invoke_without_command=True,
+)
+
+
+@cred_app.callback(invoke_without_command=True)
+def cred_root(ctx: typer.Context) -> None:
+    """Show help when no subcommand is given."""
+    if ctx.invoked_subcommand is None:
+        typer.echo(ctx.get_help())
+
+
+@cred_app.command("add")
+def cred_add(
+    label: str = typer.Option(..., "--label", help="Short name to reference this credential."),
+    kind: str = typer.Option(..., "--kind", help="snmp_v2c | snmp_v3 | ssh_key | ssh_password | api_token"),
+) -> None:
+    """Add a new credential. Reads the secret from LANGUSTA_CRED_SECRET or prompts."""
+    if kind not in cred_dal.VALID_KINDS:
+        typer.echo(f"error: unknown kind {kind!r}; valid: {sorted(cred_dal.VALID_KINDS)}", err=True)
+        raise typer.Exit(code=2)
+
+    vault = _unlock_vault()
+    secret_env = os.environ.get("LANGUSTA_CRED_SECRET")
+    secret = secret_env if secret_env is not None else typer.prompt("Secret", hide_input=True)
+    now = datetime.now(UTC)
+    with connect(paths.db_path()) as conn:
+        try:
+            cred_id = cred_dal.create(
+                conn, label=label, kind=kind,
+                secret=secret.encode("utf-8"), vault=vault, now=now,
+            )
+        except cred_dal.DuplicateLabel as exc:
+            typer.echo(f"error: {exc}", err=True)
+            raise typer.Exit(code=1) from exc
+    typer.echo(f"added credential id={cred_id} label={label} kind={kind}")
+
+
+@cred_app.command("list")
+def cred_list() -> None:
+    """List credential metadata. NEVER reveals secrets."""
+    with connect(paths.db_path()) as conn:
+        rows = cred_dal.list_info(conn)
+    if not rows:
+        typer.echo("No credentials stored.")
+        return
+    headers = ("ID", "Label", "Kind", "Created")
+    widths = [len(h) for h in headers]
+    table = [
+        (str(r.id), r.label, r.kind, r.created_at.strftime("%Y-%m-%d %H:%M"))
+        for r in rows
+    ]
+    for row in table:
+        widths = [max(w, len(cell)) for w, cell in zip(widths, row, strict=True)]
+
+    def _fmt(cells: tuple[str, ...]) -> str:
+        return "  ".join(cell.ljust(w) for cell, w in zip(cells, widths, strict=True))
+
+    typer.echo(_fmt(headers))
+    typer.echo(_fmt(tuple("-" * w for w in widths)))
+    for row in table:
+        typer.echo(_fmt(row))
+
+
+@cred_app.command("rm")
+def cred_rm(cred_id: int = typer.Argument(..., help="Credential id to remove.")) -> None:
+    """Delete a credential by id."""
+    with connect(paths.db_path()) as conn:
+        cred_dal.delete(conn, credential_id=cred_id)
+    typer.echo(f"removed credential id={cred_id}")
+
+
+app.add_typer(cred_app, name="cred")

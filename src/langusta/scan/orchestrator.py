@@ -21,6 +21,7 @@ from langusta.scan.arp import arp_lookup
 from langusta.scan.icmp import PingResult, expand_target, ping_sweep
 from langusta.scan.mdns import discover as mdns_discover
 from langusta.scan.rdns import resolve_many
+from langusta.scan.snmp.client import SnmpClient
 from langusta.scan.tcp import probe_ports_many
 
 PingFn = Callable[[list[str]], Awaitable[list[PingResult]]]
@@ -51,6 +52,8 @@ async def run_scan(
     platform_backend: PlatformBackend,
     ping_fn: PingFn | None = None,
     now_fn: Clock | None = None,
+    snmp_client: SnmpClient | None = None,
+    snmp_community: str | None = None,
 ) -> ScanReport:
     """Run one end-to-end scan against `target`.
 
@@ -83,7 +86,25 @@ async def run_scan(
     rdns_task = _asyncio.create_task(resolve_many(alive_set))
     tcp_task = _asyncio.create_task(probe_ports_many(alive_set))
     mdns_task = _asyncio.create_task(mdns_discover(target_ips=alive_set))
-    rdns_map, tcp_map, mdns_map = await _asyncio.gather(rdns_task, tcp_task, mdns_task)
+
+    snmp_map: dict[str, str] = {}
+    if snmp_client is not None and snmp_community is not None and alive_set:
+        async def _snmp_one(ip: str) -> tuple[str, str | None]:
+            try:
+                sys_descr = await snmp_client.get_sys_descr(ip, community=snmp_community)
+            except Exception:
+                sys_descr = None
+            return ip, sys_descr
+
+        snmp_gather = _asyncio.gather(*(_snmp_one(ip) for ip in alive_ips))
+        rdns_map, tcp_map, mdns_map, snmp_results = await _asyncio.gather(
+            rdns_task, tcp_task, mdns_task, snmp_gather,
+        )
+        for ip, sys_descr in snmp_results:
+            if sys_descr:
+                snmp_map[ip] = sys_descr
+    else:
+        rdns_map, tcp_map, mdns_map = await _asyncio.gather(rdns_task, tcp_task, mdns_task)
 
     inserted = updated = deferred = proposed_total = 0
 
@@ -97,12 +118,14 @@ async def run_scan(
             except oui_module.InvalidMac:
                 vendor = None
         open_ports = tcp_map.get(ip, frozenset())
+        detected_os = snmp_map.get(ip)
 
         obs = Observation(
             primary_ip=ip,
             hostname=hostname,
             mac=mac,
             vendor=vendor,
+            detected_os=detected_os,
             open_ports=open_ports,
         )
         outcome = apply_scan_observation(conn, obs, scan_id=scan_id, now=start)

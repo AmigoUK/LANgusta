@@ -74,6 +74,9 @@ filterwarnings = [
 target-version = "py312"
 line-length = 100
 src = ["src", "tests"]
+# Dynamically-generated snapshot-harness scripts are rewritten on every
+# test run; they don't need to be lint-clean.
+extend-exclude = ["tests/snapshots/_*_app.py"]
 
 [tool.ruff.lint]
 select = [

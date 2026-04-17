@@ -24,8 +24,15 @@ runner = CliRunner()
 POSIX_ONLY = pytest.mark.skipif(sys.platform == "win32", reason="POSIX permission semantics")
 
 
+_TEST_MASTER_PW = "test-master-password-long-enough"
+
+
 def _run(*args: str, env: dict[str, str] | None = None):
-    result = runner.invoke(app, list(args), env=env)
+    # M5: init requires a master password; tests supply one via env var so
+    # they never block on a prompt.
+    merged = dict(env or {})
+    merged.setdefault("LANGUSTA_MASTER_PASSWORD", _TEST_MASTER_PW)
+    result = runner.invoke(app, list(args), env=merged)
     return result
 
 
