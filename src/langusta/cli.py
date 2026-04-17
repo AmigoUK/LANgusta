@@ -19,6 +19,7 @@ from langusta.db import assets as assets_dal
 from langusta.db import credentials as cred_dal
 from langusta.db import export as export_mod
 from langusta.db import import_lansweeper as import_lansweeper_mod
+from langusta.db import import_netbox as import_netbox_mod
 from langusta.db import monitoring as mon_dal
 from langusta.db import proposed_changes as pc_dal
 from langusta.db.connection import connect
@@ -527,6 +528,41 @@ def import_lansweeper_cmd(
         report = import_lansweeper_mod.import_lansweeper_csv(
             conn, csv_path=path, now=now,
         )
+    typer.echo(f"imported {report.imported}, skipped {report.skipped}")
+
+
+@app.command("import-netbox")
+def import_netbox_cmd(
+    url: str = typer.Option(..., "--url", help="NetBox base URL (e.g. https://netbox.example.com)."),
+) -> None:
+    """Import devices from a NetBox instance via /api/dcim/devices/.
+
+    Requires LANGUSTA_NETBOX_TOKEN in the environment (never passed on the
+    command line — tokens leak into shell history and process listings).
+    """
+    token = os.environ.get("LANGUSTA_NETBOX_TOKEN")
+    if not token:
+        typer.echo(
+            "error: LANGUSTA_NETBOX_TOKEN not set. Export a NetBox API token:\n"
+            "  export LANGUSTA_NETBOX_TOKEN=<token>",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+
+    now = datetime.now(UTC)
+    with connect(paths.db_path()) as conn:
+        try:
+            report = asyncio.run(
+                import_netbox_mod.import_netbox(
+                    conn, base_url=url, token=token, now=now,
+                )
+            )
+        except import_netbox_mod.NetBoxAuthError as exc:
+            typer.echo(f"error: authentication failed: {exc}", err=True)
+            raise typer.Exit(code=1) from exc
+        except import_netbox_mod.NetBoxNetworkError as exc:
+            typer.echo(f"error: network error: {exc}", err=True)
+            raise typer.Exit(code=1) from exc
     typer.echo(f"imported {report.imported}, skipped {report.skipped}")
 
 
