@@ -18,6 +18,7 @@ from langusta.crypto.vault import Vault
 from langusta.db import assets as assets_dal
 from langusta.db import credentials as cred_dal
 from langusta.db import export as export_mod
+from langusta.db import monitoring as mon_dal
 from langusta.db import proposed_changes as pc_dal
 from langusta.db.connection import connect
 from langusta.db.migrate import latest_schema_version, migrate
@@ -504,3 +505,106 @@ def import_cmd(
             typer.echo(f"error: {exc}", err=True)
             raise typer.Exit(code=1) from exc
     typer.echo(f"imported {path}")
+
+
+# ---------------------------------------------------------------------------
+# monitor — subscriptions, single-cycle run, status
+# ---------------------------------------------------------------------------
+
+
+monitor_app = typer.Typer(help="Configure and run monitoring checks.")
+
+
+@monitor_app.command("enable")
+def monitor_enable(
+    asset: int = typer.Option(..., "--asset", help="Asset id to monitor."),
+    kind: str = typer.Option(..., "--kind", help="icmp | tcp | http"),
+    interval: int = typer.Option(60, "--interval", help="Seconds between checks."),
+    port: int | None = typer.Option(None, "--port", help="Port for tcp/http."),
+    path: str | None = typer.Option(None, "--path", help="URL path for http."),
+    target: str | None = typer.Option(
+        None, "--target", help="Override asset primary_ip if set.",
+    ),
+) -> None:
+    """Enable a monitoring check against an asset."""
+    if kind not in mon_dal.VALID_KINDS:
+        typer.echo(
+            f"error: unknown kind {kind!r}; valid: {sorted(mon_dal.VALID_KINDS)}",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+    now = datetime.now(UTC)
+    with connect(paths.db_path()) as conn:
+        try:
+            cid = mon_dal.enable_check(
+                conn, asset_id=asset, kind=kind,
+                interval_seconds=interval, target=target,
+                port=port, path=path, now=now,
+            )
+        except ValueError as exc:
+            typer.echo(f"error: {exc}", err=True)
+            raise typer.Exit(code=2) from exc
+    typer.echo(f"enabled check id={cid}")
+
+
+@monitor_app.command("disable")
+def monitor_disable(
+    check_id: int = typer.Argument(..., help="Monitoring check id to disable."),
+) -> None:
+    with connect(paths.db_path()) as conn:
+        mon_dal.disable_check(conn, check_id)
+    typer.echo(f"disabled check id={check_id}")
+
+
+@monitor_app.command("list")
+def monitor_list() -> None:
+    """List all configured checks."""
+    with connect(paths.db_path()) as conn:
+        checks = mon_dal.list_checks(conn)
+    if not checks:
+        typer.echo("No checks configured.")
+        return
+    typer.echo(f"{len(checks)} check(s):")
+    for c in checks:
+        bits = [f"id={c.id}", f"asset={c.asset_id}", c.kind, f"every {c.interval_seconds}s"]
+        if c.port is not None:
+            bits.append(f"port={c.port}")
+        if c.path is not None:
+            bits.append(f"path={c.path}")
+        bits.append("enabled" if c.enabled else "disabled")
+        if c.last_status is not None:
+            bits.append(f"last={c.last_status}")
+        typer.echo("  " + "  ".join(bits))
+
+
+@monitor_app.command("run")
+def monitor_run() -> None:
+    """Execute one cycle of due checks and exit."""
+    from langusta.monitor.runner import run_once
+
+    now = datetime.now(UTC)
+    with connect(paths.db_path()) as conn:
+        summary = asyncio.run(run_once(conn, now=now))
+    typer.echo(
+        f"executed {summary.executed} check(s) "
+        f"({summary.ok_count} ok, {summary.fail_count} fail, "
+        f"{summary.transitions} state transition(s))"
+    )
+
+
+@monitor_app.command("status")
+def monitor_status() -> None:
+    """Show daemon heartbeat freshness."""
+    now = datetime.now(UTC)
+    with connect(paths.db_path()) as conn:
+        hb = mon_dal.get_heartbeat(conn)
+    if hb is None:
+        typer.echo("no heartbeat recorded — monitor has never run")
+        return
+    age = (now - hb).total_seconds()
+    stale = mon_dal.is_heartbeat_stale(hb, now=now, tolerance_seconds=120)
+    marker = "STALE" if stale else "fresh"
+    typer.echo(f"heartbeat {hb.isoformat()}  ({int(age)}s ago, {marker})")
+
+
+app.add_typer(monitor_app, name="monitor")
