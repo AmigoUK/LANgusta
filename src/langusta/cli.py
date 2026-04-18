@@ -206,7 +206,7 @@ def scan(
     target: str = typer.Argument(..., help="Subnet (CIDR) or single IPv4 address."),
     snmp: str | None = typer.Option(
         None, "--snmp",
-        help="Credential label (snmp_v2c) to enrich hosts with sysDescr.",
+        help="Credential label (snmp_v2c or snmp_v3) to enrich hosts with sysDescr.",
     ),
 ) -> None:
     """Sweep a subnet and populate the inventory with live hosts.
@@ -215,17 +215,19 @@ def scan(
     hosts, consults the local ARP table to pair them with MACs, and feeds
     each observation through the scanner-proposes-human-disposes write path.
 
-    `--snmp <label>` uses the named SNMP v2c credential to enrich hosts
-    with sysDescr; hosts that don't respond are silently skipped.
+    `--snmp <label>` uses the named SNMP credential (v2c or v3 authPriv)
+    to enrich hosts with sysDescr; hosts that don't respond are silently
+    skipped.
     """
     from icmplib.exceptions import SocketPermissionError
 
     from langusta.scan.orchestrator import run_scan
+    from langusta.scan.snmp.credentials import cred_to_snmp_auth
     from langusta.scan.snmp.pysnmp_backend import PysnmpBackend
 
     backend = get_backend()
     snmp_client = None
-    snmp_community: str | None = None
+    snmp_auth = None
     if snmp is not None:
         vault = _unlock_vault()
         with connect(paths.db_path()) as conn:
@@ -233,15 +235,19 @@ def scan(
             if info is None:
                 typer.echo(f"error: no credential with label {snmp!r}", err=True)
                 raise typer.Exit(code=1)
-            if info.kind != "snmp_v2c":
+            if info.kind not in {"snmp_v2c", "snmp_v3"}:
                 typer.echo(
                     f"error: credential {snmp!r} is {info.kind}, "
-                    "only snmp_v2c is supported in v1",
+                    "expected snmp_v2c or snmp_v3",
                     err=True,
                 )
                 raise typer.Exit(code=2)
             secret = cred_dal.get_secret(conn, credential_id=info.id, vault=vault)
-        snmp_community = secret.decode("utf-8")
+        try:
+            snmp_auth = cred_to_snmp_auth(info, secret)
+        except (ValueError, KeyError) as exc:
+            typer.echo(f"error: malformed credential {snmp!r}: {exc}", err=True)
+            raise typer.Exit(code=2) from exc
         snmp_client = PysnmpBackend()
 
     with connect(paths.db_path()) as conn:
@@ -250,7 +256,7 @@ def scan(
                 run_scan(
                     conn, target, platform_backend=backend,
                     snmp_client=snmp_client,
-                    snmp_community=snmp_community,
+                    snmp_auth=snmp_auth,
                     backups_dir=paths.backups_dir(),
                 )
             )
@@ -356,25 +362,77 @@ def cred_add(
     label: str = typer.Option(..., "--label", help="Short name to reference this credential."),
     kind: str = typer.Option(..., "--kind", help="snmp_v2c | snmp_v3 | ssh_key | ssh_password | api_token"),
 ) -> None:
-    """Add a new credential. Reads the secret from LANGUSTA_CRED_SECRET or prompts."""
+    """Add a new credential.
+
+    For `snmp_v2c`, `ssh_key`, `ssh_password`, `api_token`: reads a single
+    secret from LANGUSTA_CRED_SECRET or prompts.
+
+    For `snmp_v3`: reads five fields either from LANGUSTA_CRED_V3_* env
+    vars or via interactive prompts (username, auth_protocol,
+    auth_passphrase, priv_protocol, priv_passphrase).
+    """
     if kind not in cred_dal.VALID_KINDS:
         typer.echo(f"error: unknown kind {kind!r}; valid: {sorted(cred_dal.VALID_KINDS)}", err=True)
         raise typer.Exit(code=2)
 
     vault = _unlock_vault()
-    secret_env = os.environ.get("LANGUSTA_CRED_SECRET")
-    secret = secret_env if secret_env is not None else typer.prompt("Secret", hide_input=True)
+    if kind == "snmp_v3":
+        try:
+            secret_bytes = _collect_snmp_v3_secret()
+        except ValueError as exc:
+            typer.echo(f"error: {exc}", err=True)
+            raise typer.Exit(code=2) from exc
+    else:
+        secret_env = os.environ.get("LANGUSTA_CRED_SECRET")
+        secret_str = secret_env if secret_env is not None else typer.prompt("Secret", hide_input=True)
+        secret_bytes = secret_str.encode("utf-8")
     now = datetime.now(UTC)
     with connect(paths.db_path()) as conn:
         try:
             cred_id = cred_dal.create(
                 conn, label=label, kind=kind,
-                secret=secret.encode("utf-8"), vault=vault, now=now,
+                secret=secret_bytes, vault=vault, now=now,
             )
         except cred_dal.DuplicateLabel as exc:
             typer.echo(f"error: {exc}", err=True)
             raise typer.Exit(code=1) from exc
     typer.echo(f"added credential id={cred_id} label={label} kind={kind}")
+
+
+def _collect_snmp_v3_secret() -> bytes:
+    """Collect v3 parameters via env vars or interactive prompts."""
+    from langusta.scan.snmp.credentials import encode_snmp_v3_secret
+
+    username = os.environ.get("LANGUSTA_CRED_V3_USER") or typer.prompt("SNMPv3 username")
+    auth_protocol = (
+        os.environ.get("LANGUSTA_CRED_V3_AUTH_PROTO")
+        or typer.prompt("Auth protocol (NONE|MD5|SHA|SHA-224|SHA-256|SHA-384|SHA-512)", default="SHA")
+    )
+    if auth_protocol == "NONE":
+        auth_passphrase: str | None = None
+    else:
+        auth_passphrase = (
+            os.environ.get("LANGUSTA_CRED_V3_AUTH_PASS")
+            or typer.prompt("Auth passphrase", hide_input=True)
+        )
+    priv_protocol = (
+        os.environ.get("LANGUSTA_CRED_V3_PRIV_PROTO")
+        or typer.prompt("Priv protocol (NONE|DES|3DES|AES-128|AES-192|AES-256)", default="AES-128")
+    )
+    if priv_protocol == "NONE":
+        priv_passphrase: str | None = None
+    else:
+        priv_passphrase = (
+            os.environ.get("LANGUSTA_CRED_V3_PRIV_PASS")
+            or typer.prompt("Priv passphrase", hide_input=True)
+        )
+    return encode_snmp_v3_secret(
+        username=username,
+        auth_protocol=auth_protocol,
+        auth_passphrase=auth_passphrase,
+        priv_protocol=priv_protocol,
+        priv_passphrase=priv_passphrase,
+    )
 
 
 @cred_app.command("list")

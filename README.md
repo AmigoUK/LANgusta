@@ -2,7 +2,7 @@
 
 > Local-first, self-hosted asset registry + network scanner + lightweight monitoring, for small IT teams and MSP technicians managing networks up to 250 devices.
 
-**Status:** 0.1.0-rc1 — alpha. Core v1 Must-Have scope is implemented and tested; the binary is ready for early users who are comfortable reporting issues.
+**Status:** 0.2.0-dev — alpha. v1 Must-Have is shipped (0.1.0-rc1); the 0.2.x series is adding post-v1 features from the backlog. SNMP v3 authPriv scan support lands in 0.2.0-dev alongside SNMP-OID and SSH-command monitor check kinds.
 
 ## What it does
 
@@ -79,10 +79,11 @@ langusta list
 
 # Scan
 langusta scan 192.168.1.0/24               # ICMP + ARP + rDNS + TCP + OUI + mDNS
-langusta scan 192.168.1.0/24 --snmp office # + SNMPv2c enrichment (see `cred add`)
+langusta scan 192.168.1.0/24 --snmp office # + SNMPv2c or SNMPv3 enrichment (see `cred add`)
 
 # Credentials (encrypted via AES-256-GCM + Argon2id)
-langusta cred add --label office --kind snmp_v2c
+langusta cred add --label office --kind snmp_v2c      # v2c community string
+langusta cred add --label office-v3 --kind snmp_v3     # v3 authPriv (prompts for 5 fields)
 langusta cred list
 
 # Review queue

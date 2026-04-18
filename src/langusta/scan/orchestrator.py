@@ -23,6 +23,7 @@ from langusta.scan.arp import arp_lookup
 from langusta.scan.icmp import PingResult, expand_target, ping_sweep
 from langusta.scan.mdns import discover as mdns_discover
 from langusta.scan.rdns import resolve_many
+from langusta.scan.snmp.auth import SnmpAuth
 from langusta.scan.snmp.client import SnmpClient
 from langusta.scan.tcp import probe_ports_many
 
@@ -64,7 +65,7 @@ async def run_scan(
     ping_fn: PingFn | None = None,
     now_fn: Clock | None = None,
     snmp_client: SnmpClient | None = None,
-    snmp_community: str | None = None,
+    snmp_auth: SnmpAuth | None = None,
     backups_dir: Path | None = None,
 ) -> ScanReport:
     """Run one end-to-end scan against `target`.
@@ -100,10 +101,10 @@ async def run_scan(
     mdns_task = _asyncio.create_task(mdns_discover(target_ips=alive_set))
 
     snmp_map: dict[str, str] = {}
-    if snmp_client is not None and snmp_community is not None and alive_set:
+    if snmp_client is not None and snmp_auth is not None and alive_set:
         async def _snmp_one(ip: str) -> tuple[str, str | None]:
             try:
-                sys_descr = await snmp_client.get_sys_descr(ip, community=snmp_community)
+                sys_descr = await snmp_client.get_sys_descr(ip, auth=snmp_auth)
             except Exception:
                 sys_descr = None
             return ip, sys_descr
