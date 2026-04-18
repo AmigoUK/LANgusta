@@ -13,7 +13,8 @@ from datetime import datetime, timedelta
 
 from langusta.db import meta as meta_dal
 
-VALID_KINDS = frozenset({"icmp", "tcp", "http"})
+VALID_KINDS = frozenset({"icmp", "tcp", "http", "snmp_oid", "ssh_command"})
+VALID_COMPARATORS = frozenset({"eq", "neq", "contains", "gt", "lt"})
 _HEARTBEAT_KEY = "daemon_heartbeat"
 
 
@@ -30,6 +31,16 @@ class MonitoringCheck:
     created_at: datetime
     last_run_at: datetime | None
     last_status: str | None
+    # Extra config for snmp_oid / ssh_command kinds (NULL for legacy kinds).
+    oid: str | None = None
+    expected_value: str | None = None
+    comparator: str | None = None
+    command: str | None = None
+    success_exit_code: int | None = None
+    stdout_pattern: str | None = None
+    timeout_seconds: float | None = None
+    credential_id: int | None = None
+    username: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -52,6 +63,11 @@ def _parse_iso(raw: str | None) -> datetime | None:
 
 
 def _row_to_check(row: sqlite3.Row) -> MonitoringCheck:
+    keys = row.keys()
+
+    def _opt(name: str, default=None):
+        return row[name] if name in keys else default
+
     return MonitoringCheck(
         id=int(row["id"]),
         asset_id=int(row["asset_id"]),
@@ -64,6 +80,15 @@ def _row_to_check(row: sqlite3.Row) -> MonitoringCheck:
         created_at=datetime.fromisoformat(row["created_at"]),
         last_run_at=_parse_iso(row["last_run_at"]),
         last_status=row["last_status"],
+        oid=_opt("oid"),
+        expected_value=_opt("expected_value"),
+        comparator=_opt("comparator"),
+        command=_opt("command"),
+        success_exit_code=_opt("success_exit_code"),
+        stdout_pattern=_opt("stdout_pattern"),
+        timeout_seconds=_opt("timeout_seconds"),
+        credential_id=_opt("credential_id"),
+        username=_opt("username"),
     )
 
 
@@ -94,14 +119,45 @@ def enable_check(
     port: int | None = None,
     path: str | None = None,
     now: datetime,
+    oid: str | None = None,
+    expected_value: str | None = None,
+    comparator: str | None = None,
+    command: str | None = None,
+    success_exit_code: int | None = None,
+    stdout_pattern: str | None = None,
+    timeout_seconds: float | None = None,
+    credential_id: int | None = None,
+    username: str | None = None,
 ) -> int:
     if kind not in VALID_KINDS:
         raise ValueError(f"unknown kind {kind!r}; valid: {sorted(VALID_KINDS)}")
+    if comparator is not None and comparator not in VALID_COMPARATORS:
+        raise ValueError(
+            f"unknown comparator {comparator!r}; valid: {sorted(VALID_COMPARATORS)}"
+        )
+    if kind == "snmp_oid":
+        if not oid:
+            raise ValueError("snmp_oid checks require --oid")
+        if credential_id is None:
+            raise ValueError("snmp_oid checks require an SNMP credential")
+    if kind == "ssh_command":
+        if not command:
+            raise ValueError("ssh_command checks require --command")
+        if credential_id is None:
+            raise ValueError("ssh_command checks require an SSH credential")
+        if not username:
+            raise ValueError("ssh_command checks require --user")
     row = conn.execute(
         "INSERT INTO monitoring_checks ("
-        "asset_id, kind, target, port, path, interval_seconds, enabled, created_at"
-        ") VALUES (?, ?, ?, ?, ?, ?, 1, ?) RETURNING id",
-        (asset_id, kind, target, port, path, interval_seconds, _iso(now)),
+        "asset_id, kind, target, port, path, interval_seconds, enabled, created_at, "
+        "oid, expected_value, comparator, command, success_exit_code, stdout_pattern, "
+        "timeout_seconds, credential_id, username"
+        ") VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id",
+        (
+            asset_id, kind, target, port, path, interval_seconds, _iso(now),
+            oid, expected_value, comparator, command, success_exit_code,
+            stdout_pattern, timeout_seconds, credential_id, username,
+        ),
     ).fetchone()
     return int(row[0])
 
@@ -114,7 +170,9 @@ def disable_check(conn: sqlite3.Connection, check_id: int) -> None:
 
 _CHECK_COLS = (
     "id, asset_id, kind, target, port, path, interval_seconds, enabled, "
-    "created_at, last_run_at, last_status"
+    "created_at, last_run_at, last_status, "
+    "oid, expected_value, comparator, command, success_exit_code, stdout_pattern, "
+    "timeout_seconds, credential_id, username"
 )
 
 
@@ -239,3 +297,12 @@ def is_heartbeat_stale(
     if heartbeat is None:
         return True
     return (now - heartbeat) > timedelta(seconds=tolerance_seconds)
+
+
+def has_cred_backed_check(conn: sqlite3.Connection) -> bool:
+    """True when at least one enabled check needs the credentials vault."""
+    row = conn.execute(
+        "SELECT 1 FROM monitoring_checks WHERE enabled = 1 "
+        "AND kind IN ('snmp_oid', 'ssh_command') LIMIT 1"
+    ).fetchone()
+    return row is not None

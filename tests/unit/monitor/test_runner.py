@@ -190,3 +190,127 @@ async def test_run_once_updates_heartbeat(tmp_path: Path) -> None:
         )
         hb = mon_dal.get_heartbeat(conn)
     assert hb == NOW
+
+
+# ---------------------------------------------------------------------------
+# snmp_oid dispatch + credential caching
+# ---------------------------------------------------------------------------
+
+
+class _RecordingSnmpCheck:
+    """Captures the config dict every time it's invoked."""
+
+    def __init__(self, result: CheckResult) -> None:
+        self.result = result
+        self.configs: list[dict] = []
+
+    async def run(self, *, target: str, **config: object) -> CheckResult:
+        self.configs.append({"target": target, **config})
+        return self.result
+
+
+def _seed_snmp_oid_setup(tmp_path: Path):
+    """Seed DB with two snmp_oid checks sharing one credential (for cache test).
+
+    Returns (db_path, check1_id, check2_id, credential_id, unlocked_vault).
+    """
+    from langusta.crypto import master_password as mp
+    from langusta.db import credentials as cred_dal
+
+    db = tmp_path / "mon.sqlite"
+    migrate(db)
+
+    with connect(db) as conn:
+        mp.setup(conn, password="pw-long-enough-for-tests", now=NOW)
+        vault = mp.unlock(conn, password="pw-long-enough-for-tests")
+
+        aid1 = assets_dal.insert_manual(
+            conn, hostname="sw1", primary_ip="10.0.0.1", now=NOW,
+        )
+        aid2 = assets_dal.insert_manual(
+            conn, hostname="sw2", primary_ip="10.0.0.2", now=NOW,
+        )
+
+        cred_id = cred_dal.create(
+            conn, label="snmp-shared", kind="snmp_v2c",
+            secret=b"public", vault=vault, now=NOW,
+        )
+        c1 = mon_dal.enable_check(
+            conn, asset_id=aid1, kind="snmp_oid", interval_seconds=60,
+            oid="1.3.6.1.2.1.1.3.0", credential_id=cred_id, now=NOW,
+        )
+        c2 = mon_dal.enable_check(
+            conn, asset_id=aid2, kind="snmp_oid", interval_seconds=60,
+            oid="1.3.6.1.2.1.1.3.0", credential_id=cred_id, now=NOW,
+        )
+    return db, c1, c2, cred_id, vault
+
+
+@pytest.mark.asyncio
+async def test_snmp_oid_runner_passes_resolved_auth_to_check(tmp_path: Path) -> None:
+    db, _c1, _c2, _cred_id, vault = _seed_snmp_oid_setup(tmp_path)
+    recording = _RecordingSnmpCheck(
+        CheckResult(status="ok", latency_ms=2.0, detail="x"),
+    )
+    with connect(db) as conn:
+        await run_once(
+            conn, now=NOW, vault=vault,
+            check_registry={"snmp_oid": recording},
+        )
+    assert len(recording.configs) == 2  # one call per check
+    from langusta.scan.snmp.auth import SnmpV2cAuth
+    for c in recording.configs:
+        assert isinstance(c["snmp_auth"], SnmpV2cAuth)
+        assert c["snmp_auth"].community == "public"
+        assert c["oid"] == "1.3.6.1.2.1.1.3.0"
+
+
+@pytest.mark.asyncio
+async def test_snmp_oid_runner_caches_credential_decrypt(tmp_path: Path) -> None:
+    """N checks sharing one credential_id => one decrypt, not N."""
+    db, _c1, _c2, _cred_id, vault = _seed_snmp_oid_setup(tmp_path)
+
+    from langusta.db import credentials as cred_dal
+    calls: list[int] = []
+    original = cred_dal.get_secret
+
+    def counting_get_secret(conn, *, credential_id, vault):
+        calls.append(credential_id)
+        return original(conn, credential_id=credential_id, vault=vault)
+
+    recording = _RecordingSnmpCheck(
+        CheckResult(status="ok", latency_ms=2.0, detail="x"),
+    )
+    import langusta.monitor.runner as runner_mod
+    runner_mod.cred_dal.get_secret = counting_get_secret  # type: ignore[attr-defined]
+    try:
+        with connect(db) as conn:
+            await run_once(
+                conn, now=NOW, vault=vault,
+                check_registry={"snmp_oid": recording},
+            )
+    finally:
+        runner_mod.cred_dal.get_secret = original  # type: ignore[attr-defined]
+    assert calls == [1], f"expected exactly one decrypt, got {len(calls)}: {calls}"
+
+
+@pytest.mark.asyncio
+async def test_snmp_oid_without_vault_records_fail(tmp_path: Path) -> None:
+    db, c1, _c2, _cred_id, _vault = _seed_snmp_oid_setup(tmp_path)
+    recording = _RecordingSnmpCheck(
+        CheckResult(status="ok", latency_ms=2.0, detail="x"),
+    )
+    with connect(db) as conn:
+        await run_once(
+            conn, now=NOW, vault=None,
+            check_registry={"snmp_oid": recording},
+        )
+        # Check's run() was never called — blocked at config resolution.
+        row = conn.execute(
+            "SELECT status, detail FROM check_results WHERE check_id = ?",
+            (c1,),
+        ).fetchone()
+    assert row is not None
+    assert row["status"] == "fail"
+    assert "vault" in (row["detail"] or "").lower()
+    assert len(recording.configs) == 0

@@ -51,6 +51,62 @@ def test_latest_schema_version_matches_last_migration() -> None:
 # ---------------------------------------------------------------------------
 
 
+def test_migrate_007_preserves_existing_monitoring_rows(tmp_path: Path) -> None:
+    """007_monitor_snmp_ssh rebuilds monitoring_checks via table-swap; any
+    rows from the prior schema must survive the swap unchanged."""
+    from datetime import UTC, datetime
+
+    from langusta.db import assets as assets_dal
+    from langusta.db import monitoring as mon_dal
+
+    db = tmp_path / "mig.sqlite"
+    # Apply only up through migration 006 (the pre-007 schema).
+    migrations = discover_migrations()
+    pre = [m for m in migrations if m.id < 7]
+    assert pre, "expected migrations numbered < 7"
+    with connect(db) as conn:
+        conn.execute(
+            "CREATE TABLE _migrations (id INTEGER PRIMARY KEY, description TEXT NOT NULL, "
+            "checksum TEXT NOT NULL, applied_at TEXT NOT NULL)"
+        )
+        for m in pre:
+            conn.executescript(m.sql)
+            conn.execute(
+                "INSERT INTO _migrations (id, description, checksum, applied_at) "
+                "VALUES (?, ?, ?, ?)",
+                (m.id, m.description, m.checksum, datetime.now(UTC).isoformat()),
+            )
+            conn.execute(f"PRAGMA user_version = {m.id}")
+
+        now = datetime(2026, 4, 18, 12, 0, 0, tzinfo=UTC)
+        aid = assets_dal.insert_manual(
+            conn, hostname="legacy", primary_ip="10.0.0.9", now=now,
+        )
+        # Insert using the pre-007 column set only.
+        row = conn.execute(
+            "INSERT INTO monitoring_checks ("
+            "asset_id, kind, target, port, path, interval_seconds, enabled, created_at"
+            ") VALUES (?, 'http', NULL, 8080, '/healthz', 60, 1, ?) RETURNING id",
+            (aid, now.isoformat(timespec="seconds")),
+        ).fetchone()
+        pre_007_cid = int(row[0])
+
+    # Now run migrate() to apply 007 on top of existing data.
+    migrate(db)
+
+    # Pre-existing http check survived with its config intact; new NULL
+    # columns are readable via the new DAL.
+    with connect(db) as conn:
+        check = mon_dal.get_by_id(conn, pre_007_cid)
+    assert check is not None
+    assert check.kind == "http"
+    assert check.port == 8080
+    assert check.path == "/healthz"
+    assert check.oid is None
+    assert check.command is None
+    assert check.credential_id is None
+
+
 def test_migrate_fresh_db_applies_all_migrations(tmp_path: Path) -> None:
     db = tmp_path / "fresh.sqlite"
     migrate(db)
