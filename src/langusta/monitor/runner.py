@@ -36,11 +36,16 @@ from langusta.monitor.checks.base import Check, CheckResult
 from langusta.monitor.checks.http import HttpCheck
 from langusta.monitor.checks.icmp import IcmpCheck
 from langusta.monitor.checks.snmp_oid import SnmpOidCheck
+from langusta.monitor.checks.ssh_command import SshCommandCheck
 from langusta.monitor.checks.tcp import TcpCheck
 from langusta.monitor.notifications import MonitorEvent
 from langusta.monitor.notifications import dispatch as dispatch_event
+from langusta.monitor.ssh.asyncssh_backend import AsyncsshBackend
+from langusta.monitor.ssh.auth import cred_to_ssh_auth
 from langusta.scan.snmp.credentials import cred_to_snmp_auth
 from langusta.scan.snmp.pysnmp_backend import PysnmpBackend
+
+DEFAULT_MAX_CONCURRENCY = 32
 
 
 def _default_registry() -> dict[str, Check]:
@@ -49,6 +54,7 @@ def _default_registry() -> dict[str, Check]:
         "tcp": TcpCheck(),
         "http": HttpCheck(),
         "snmp_oid": SnmpOidCheck(),
+        "ssh_command": SshCommandCheck(),
     }
 
 
@@ -70,6 +76,8 @@ async def run_once(
     check_registry: dict[str, Check] | None = None,
     notifications_logfile: Path | None = None,
     vault: Vault | None = None,
+    ssh_client: Any | None = None,
+    max_concurrency: int = DEFAULT_MAX_CONCURRENCY,
 ) -> RunSummary:
     registry = check_registry if check_registry is not None else DEFAULT_REGISTRY
     due = mon_dal.list_due(conn, now=now)
@@ -81,8 +89,13 @@ async def run_once(
     # Per-cycle credential cache: credential_id -> resolved context object.
     cred_cache: dict[int, Any] = {}
 
-    # SNMP client is stateless; construct once per cycle.
+    # Stateless clients: construct once per cycle.
     snmp_client = PysnmpBackend()
+    active_ssh_client = ssh_client if ssh_client is not None else AsyncsshBackend()
+
+    # Cap in-flight checks so a fleet of long-running SSH/SNMP probes can't
+    # open hundreds of sockets at once.
+    semaphore = asyncio.Semaphore(max_concurrency)
 
     # Dispatch all due checks concurrently.
     tasks = []
@@ -93,7 +106,8 @@ async def run_once(
         try:
             config = _resolve_config(
                 check, conn=conn, vault=vault,
-                snmp_client=snmp_client, cred_cache=cred_cache,
+                snmp_client=snmp_client, ssh_client=active_ssh_client,
+                cred_cache=cred_cache,
             )
         except _ConfigError as exc:
             # Pre-run config failures still write a result + surface as a fail.
@@ -108,6 +122,7 @@ async def run_once(
                 config=config,
                 sinks=sinks,
                 notifications_logfile=notifications_logfile,
+                semaphore=semaphore,
             )
         )
     outcomes = await asyncio.gather(*tasks) if tasks else []
@@ -135,6 +150,7 @@ def _resolve_config(
     conn: sqlite3.Connection,
     vault: Vault | None,
     snmp_client: Any,
+    ssh_client: Any,
     cred_cache: dict[int, Any],
 ) -> dict[str, Any]:
     """Assemble the **config kwargs dict passed to Check.run for `check`."""
@@ -150,23 +166,11 @@ def _resolve_config(
             config["path"] = check.path
         return config
     if check.kind == "snmp_oid":
-        if check.credential_id is None:
-            raise _ConfigError("snmp_oid check has no credential_id")
-        if vault is None:
-            raise _ConfigError("snmp_oid check requires unlocked vault")
-        snmp_auth = cred_cache.get(check.credential_id)
-        if snmp_auth is None:
-            info = cred_dal.get_by_id(conn, check.credential_id)
-            if info is None:
-                raise _ConfigError(f"credential id={check.credential_id} not found")
-            if info.kind not in {"snmp_v2c", "snmp_v3"}:
-                raise _ConfigError(
-                    f"credential {info.label!r} is {info.kind}, "
-                    "snmp_oid requires snmp_v2c or snmp_v3"
-                )
-            secret = cred_dal.get_secret(conn, credential_id=info.id, vault=vault)
-            snmp_auth = cred_to_snmp_auth(info, secret)
-            cred_cache[check.credential_id] = snmp_auth
+        snmp_auth = _resolve_credential(
+            check, conn=conn, vault=vault, cred_cache=cred_cache,
+            expected_kinds={"snmp_v2c", "snmp_v3"}, decoder=cred_to_snmp_auth,
+            label="snmp_oid",
+        )
         return {
             "oid": check.oid,
             "expected_value": check.expected_value,
@@ -176,8 +180,53 @@ def _resolve_config(
             "snmp_client": snmp_client,
         }
     if check.kind == "ssh_command":
-        raise _ConfigError("ssh_command check kind not yet wired")
+        ssh_auth = _resolve_credential(
+            check, conn=conn, vault=vault, cred_cache=cred_cache,
+            expected_kinds={"ssh_key", "ssh_password"}, decoder=cred_to_ssh_auth,
+            label="ssh_command",
+        )
+        return {
+            "command": check.command,
+            "username": check.username,
+            "port": check.port,
+            "timeout_seconds": check.timeout_seconds,
+            "success_exit_code": check.success_exit_code,
+            "stdout_pattern": check.stdout_pattern,
+            "ssh_auth": ssh_auth,
+            "ssh_client": ssh_client,
+        }
     raise _ConfigError(f"unknown check kind {check.kind!r}")
+
+
+def _resolve_credential(
+    check: mon_dal.MonitoringCheck,
+    *,
+    conn: sqlite3.Connection,
+    vault: Vault | None,
+    cred_cache: dict[int, Any],
+    expected_kinds: set[str],
+    decoder,
+    label: str,
+) -> Any:
+    if check.credential_id is None:
+        raise _ConfigError(f"{label} check has no credential_id")
+    if vault is None:
+        raise _ConfigError(f"{label} check requires unlocked vault")
+    cached = cred_cache.get(check.credential_id)
+    if cached is not None:
+        return cached
+    info = cred_dal.get_by_id(conn, check.credential_id)
+    if info is None:
+        raise _ConfigError(f"credential id={check.credential_id} not found")
+    if info.kind not in expected_kinds:
+        raise _ConfigError(
+            f"credential {info.label!r} is {info.kind}, "
+            f"{label} requires one of {sorted(expected_kinds)}"
+        )
+    secret = cred_dal.get_secret(conn, credential_id=info.id, vault=vault)
+    resolved = decoder(info, secret)
+    cred_cache[check.credential_id] = resolved
+    return resolved
 
 
 @dataclass(frozen=True, slots=True)
@@ -195,6 +244,7 @@ async def _run_one(
     config: dict[str, Any],
     sinks: list,
     notifications_logfile: Path | None,
+    semaphore: asyncio.Semaphore,
 ) -> _Outcome:
     asset = assets_dal.get_by_id(conn, check.asset_id)
     target = check.target or (asset.primary_ip if asset is not None else None)
@@ -207,10 +257,11 @@ async def _run_one(
         )
         return _Outcome(status="fail", transitioned=False)
 
-    try:
-        result: CheckResult = await impl.run(target=target, **config)
-    except Exception as exc:
-        result = CheckResult(status="fail", latency_ms=None, detail=str(exc))
+    async with semaphore:
+        try:
+            result: CheckResult = await impl.run(target=target, **config)
+        except Exception as exc:
+            result = CheckResult(status="fail", latency_ms=None, detail=str(exc))
 
     prior_status = check.last_status
     mon_dal.record_result(

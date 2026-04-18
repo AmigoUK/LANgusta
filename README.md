@@ -2,7 +2,7 @@
 
 > Local-first, self-hosted asset registry + network scanner + lightweight monitoring, for small IT teams and MSP technicians managing networks up to 250 devices.
 
-**Status:** 0.2.0-dev — alpha. v1 Must-Have is shipped (0.1.0-rc1); the 0.2.x series is adding post-v1 features from the backlog. SNMP v3 authPriv scan support lands in 0.2.0-dev alongside SNMP-OID and SSH-command monitor check kinds.
+**Status:** 0.2.0-rc1 — alpha. v1 Must-Have shipped in 0.1.0-rc1; 0.2.0-rc1 adds SNMP v3 authPriv for `scan --snmp`, `snmp_oid` and `ssh_command` monitor check kinds, and a configurable concurrency cap on the monitor runner.
 
 ## What it does
 
@@ -12,7 +12,7 @@ Three things that normally live in three tools, unified on one surface:
 |---|---|
 | **Asset registry** | A field-level-provenance CMDB. Every field knows whether it was set by a scanner, a human, or an import — and scans never silently overwrite a human-set value. |
 | **Network scanner** | `langusta scan 192.168.1.0/24` — ICMP sweep + ARP + rDNS + TCP port probe + OUI vendor lookup + mDNS + optional SNMPv2c enrichment. |
-| **Lightweight monitoring** | Promote any asset to monitored. ICMP/TCP/HTTP checks run on your schedule; failures and recoveries land on the asset's immutable timeline. |
+| **Lightweight monitoring** | Promote any asset to monitored. ICMP / TCP / HTTP / SNMP-OID / SSH-command checks run on your schedule; failures and recoveries land on the asset's immutable timeline. |
 
 The distinctive feature is **institutional memory** — every asset carries its full history of scan changes, manual notes, monitoring events, and corrections on one append-only timeline.
 
