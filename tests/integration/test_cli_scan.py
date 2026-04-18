@@ -114,3 +114,145 @@ def test_scan_reports_counts(home: Path) -> None:
 def test_scan_with_invalid_target_is_user_error(home: Path) -> None:
     r = _scan(home, "not-a-subnet")
     assert r.exit_code != 0
+
+
+# ---------------------------------------------------------------------------
+# scan --snmp — v2c and v3 credential paths
+# ---------------------------------------------------------------------------
+
+PW = "master-password-for-tests-long-enough"
+
+
+def _init_with_password(home: Path):
+    return runner.invoke(
+        app, ["init"],
+        env={"HOME": str(home), "LANGUSTA_MASTER_PASSWORD": PW},
+    )
+
+
+@pytest.fixture
+def home_with_snmp(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Initialised home with master password and a patched SNMP client.
+
+    Replaces `PysnmpBackend` with a TranscriptBackend that returns a known
+    sys_descr for 10.0.0.1 regardless of auth — enough to verify the CLI
+    plumbs credentials through without opening network sockets.
+    """
+    from langusta.scan import icmp as _icmp
+    from langusta.scan.snmp.transcript_backend import TranscriptBackend
+
+    h = tmp_path / "home"
+    h.mkdir()
+
+    async def fake_ping(targets, **_):
+        alive = {"10.0.0.1"}
+        return [
+            _icmp.PingResult(address=t, is_alive=True, rtt_ms=1.0)
+            for t in targets
+            if t in alive
+        ]
+
+    monkeypatch.setattr("langusta.scan.orchestrator.ping_sweep", fake_ping)
+
+    class _StubBackend:
+        def arp_table(self):
+            return iter([("10.0.0.1", "aa:bb:cc:00:00:01")])
+
+        def enforce_private(self, path):  # pragma: no cover
+            import os
+            os.chmod(path, 0o700 if path.is_dir() else 0o600)
+
+    monkeypatch.setattr("langusta.cli.get_backend", lambda: _StubBackend())
+
+    _snmp_fixture = TranscriptBackend.from_dict({
+        "10.0.0.1": {"sys_descr": "MikroTik RouterOS 7.11.2"},
+    })
+    monkeypatch.setattr(
+        "langusta.scan.snmp.pysnmp_backend.PysnmpBackend",
+        lambda: _snmp_fixture,
+    )
+
+    _init_with_password(h)
+    return h
+
+
+def _env_pw(home: Path, extras: dict[str, str] | None = None) -> dict[str, str]:
+    env = {"HOME": str(home), "LANGUSTA_MASTER_PASSWORD": PW}
+    if extras:
+        env.update(extras)
+    return env
+
+
+def test_scan_with_snmp_v2c_credential(home_with_snmp: Path) -> None:
+    h = home_with_snmp
+    r = runner.invoke(
+        app,
+        ["cred", "add", "--label", "v2c", "--kind", "snmp_v2c"],
+        env=_env_pw(h, {"LANGUSTA_CRED_SECRET": "public"}),
+    )
+    assert r.exit_code == 0, r.stdout
+
+    r = runner.invoke(
+        app, ["scan", "10.0.0.0/30", "--snmp", "v2c"],
+        env=_env_pw(h),
+    )
+    assert r.exit_code == 0, r.stdout + (r.stderr or "")
+
+    with connect(h / ".langusta" / "db.sqlite") as conn:
+        [asset] = assets_dal.list_all(conn)
+    assert asset.detected_os == "MikroTik RouterOS 7.11.2"
+
+
+def test_scan_with_snmp_v3_credential(home_with_snmp: Path) -> None:
+    h = home_with_snmp
+    env = _env_pw(h, {
+        "LANGUSTA_CRED_V3_USER": "admin",
+        "LANGUSTA_CRED_V3_AUTH_PROTO": "SHA",
+        "LANGUSTA_CRED_V3_AUTH_PASS": "authpass-long-enough",
+        "LANGUSTA_CRED_V3_PRIV_PROTO": "AES-128",
+        "LANGUSTA_CRED_V3_PRIV_PASS": "privpass-long-enough",
+    })
+    r = runner.invoke(
+        app,
+        ["cred", "add", "--label", "v3", "--kind", "snmp_v3"],
+        env=env,
+    )
+    assert r.exit_code == 0, r.stdout
+
+    r = runner.invoke(
+        app, ["scan", "10.0.0.0/30", "--snmp", "v3"],
+        env=_env_pw(h),
+    )
+    assert r.exit_code == 0, r.stdout + (r.stderr or "")
+
+    with connect(h / ".langusta" / "db.sqlite") as conn:
+        [asset] = assets_dal.list_all(conn)
+    assert asset.detected_os == "MikroTik RouterOS 7.11.2"
+
+
+def test_scan_with_snmp_rejects_non_snmp_credential(home_with_snmp: Path) -> None:
+    h = home_with_snmp
+    # Add an SSH credential, then try to use it with --snmp.
+    r = runner.invoke(
+        app,
+        ["cred", "add", "--label", "ssh", "--kind", "ssh_key"],
+        env=_env_pw(h, {"LANGUSTA_CRED_SECRET": "FAKE-KEY-PEM"}),
+    )
+    assert r.exit_code == 0
+
+    r = runner.invoke(
+        app, ["scan", "10.0.0.0/30", "--snmp", "ssh"],
+        env=_env_pw(h),
+    )
+    assert r.exit_code != 0
+    assert "snmp_v2c or snmp_v3" in (r.stdout + (r.stderr or ""))
+
+
+def test_scan_with_snmp_unknown_label(home_with_snmp: Path) -> None:
+    h = home_with_snmp
+    r = runner.invoke(
+        app, ["scan", "10.0.0.0/30", "--snmp", "nope"],
+        env=_env_pw(h),
+    )
+    assert r.exit_code != 0
+    assert "nope" in (r.stdout + (r.stderr or ""))

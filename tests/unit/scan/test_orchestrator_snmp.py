@@ -18,6 +18,7 @@ from langusta.db.migrate import migrate
 from langusta.platform.base import ArpEntry
 from langusta.scan.icmp import PingResult
 from langusta.scan.orchestrator import run_scan
+from langusta.scan.snmp.auth import SnmpV2cAuth
 from langusta.scan.snmp.transcript_backend import TranscriptBackend
 
 NOW = datetime(2026, 4, 17, 12, 0, 0, tzinfo=UTC)
@@ -55,7 +56,7 @@ async def test_snmp_sys_descr_populates_detected_os(tmp_path: Path) -> None:
             ping_fn=_ping(["10.0.0.1"]),
             now_fn=lambda: NOW,
             snmp_client=client,
-            snmp_community="public",
+            snmp_auth=SnmpV2cAuth(community="public"),
         )
         [asset] = assets_dal.list_all(conn)
     assert asset.detected_os == "Cisco IOS 15.2(4)E9"
@@ -76,7 +77,7 @@ async def test_snmp_unreachable_does_not_fail_scan(tmp_path: Path) -> None:
             ping_fn=_ping(["10.0.0.1", "10.0.0.2"]),
             now_fn=lambda: NOW,
             snmp_client=client,
-            snmp_community="public",
+            snmp_auth=SnmpV2cAuth(community="public"),
         )
         rows = assets_dal.list_all(conn)
     assert report.inserted == 2
@@ -93,7 +94,7 @@ async def test_no_snmp_client_no_enrichment(tmp_path: Path) -> None:
             platform_backend=_StubBackend(),
             ping_fn=_ping(["10.0.0.1"]),
             now_fn=lambda: NOW,
-            # snmp_client / snmp_community not provided
+            # snmp_client / snmp_auth not provided
         )
         [asset] = assets_dal.list_all(conn)
     assert asset.detected_os is None
@@ -117,7 +118,7 @@ async def test_snmp_only_queries_alive_hosts(tmp_path: Path) -> None:
             ping_fn=_ping(["10.0.0.1"]),
             now_fn=lambda: NOW,
             snmp_client=client,
-            snmp_community="public",
+            snmp_auth=SnmpV2cAuth(community="public"),
         )
         rows = assets_dal.list_all(conn)
     assert len(rows) == 1

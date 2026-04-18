@@ -140,3 +140,54 @@ def test_cred_secret_never_appears_in_stdout(tmp_path: Path) -> None:
     assert secret not in r.stdout
     r2 = runner.invoke(app, ["cred", "list"], env=_env(h))
     assert secret not in r2.stdout
+
+
+def test_cred_add_snmp_v3_via_env_vars_round_trips(tmp_path: Path) -> None:
+    h = _home(tmp_path)
+    _init(h)
+    env = {
+        **_env(h),
+        "LANGUSTA_CRED_V3_USER": "admin",
+        "LANGUSTA_CRED_V3_AUTH_PROTO": "SHA",
+        "LANGUSTA_CRED_V3_AUTH_PASS": "authpass-long-enough",
+        "LANGUSTA_CRED_V3_PRIV_PROTO": "AES-128",
+        "LANGUSTA_CRED_V3_PRIV_PASS": "privpass-long-enough",
+    }
+    r = runner.invoke(app, ["cred", "add", "--label", "v3-lab", "--kind", "snmp_v3"], env=env)
+    assert r.exit_code == 0, r.stdout
+    # v3 passphrases must not leak into stdout.
+    assert "authpass-long-enough" not in r.stdout
+    assert "privpass-long-enough" not in r.stdout
+
+    # The credential round-trips through the vault back into a SnmpV3Auth.
+    from langusta.crypto import master_password as mp
+    from langusta.scan.snmp.auth import SnmpV3Auth
+    from langusta.scan.snmp.credentials import cred_to_snmp_auth
+
+    with connect(h / ".langusta" / "db.sqlite") as conn:
+        vault = mp.unlock(conn, password=PW)
+        [info] = cred_dal.list_info(conn)
+        secret = cred_dal.get_secret(conn, credential_id=info.id, vault=vault)
+    assert info.kind == "snmp_v3"
+    auth = cred_to_snmp_auth(info, secret)
+    assert isinstance(auth, SnmpV3Auth)
+    assert auth.username == "admin"
+    assert auth.auth_protocol == "SHA"
+    assert auth.priv_protocol == "AES-128"
+    assert auth.auth_passphrase == "authpass-long-enough"
+    assert auth.priv_passphrase == "privpass-long-enough"
+
+
+def test_cred_add_snmp_v3_rejects_bad_protocol(tmp_path: Path) -> None:
+    h = _home(tmp_path)
+    _init(h)
+    env = {
+        **_env(h),
+        "LANGUSTA_CRED_V3_USER": "admin",
+        "LANGUSTA_CRED_V3_AUTH_PROTO": "SHA-3",  # not valid
+        "LANGUSTA_CRED_V3_AUTH_PASS": "x",
+        "LANGUSTA_CRED_V3_PRIV_PROTO": "AES-128",
+        "LANGUSTA_CRED_V3_PRIV_PASS": "y",
+    }
+    r = runner.invoke(app, ["cred", "add", "--label", "bad", "--kind", "snmp_v3"], env=env)
+    assert r.exit_code != 0
