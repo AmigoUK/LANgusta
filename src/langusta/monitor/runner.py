@@ -11,6 +11,10 @@
 
 The function is called both by `langusta monitor run` (single-shot) and
 by the long-running daemon loop (M7+).
+
+Checks that need credentials (`snmp_oid`, `ssh_command`) require a
+`vault` argument. Per-cycle credential decrypts are cached by
+`credential_id` so that N checks sharing a label cost one decrypt, not N.
 """
 
 from __future__ import annotations
@@ -20,23 +24,35 @@ import sqlite3
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
+from langusta.crypto.vault import Vault
 from langusta.db import assets as assets_dal
+from langusta.db import credentials as cred_dal
 from langusta.db import monitoring as mon_dal
 from langusta.db import notifications as notif_dal
 from langusta.db import timeline as tl_dal
 from langusta.monitor.checks.base import Check, CheckResult
 from langusta.monitor.checks.http import HttpCheck
 from langusta.monitor.checks.icmp import IcmpCheck
+from langusta.monitor.checks.snmp_oid import SnmpOidCheck
 from langusta.monitor.checks.tcp import TcpCheck
 from langusta.monitor.notifications import MonitorEvent
 from langusta.monitor.notifications import dispatch as dispatch_event
+from langusta.scan.snmp.credentials import cred_to_snmp_auth
+from langusta.scan.snmp.pysnmp_backend import PysnmpBackend
 
-DEFAULT_REGISTRY: dict[str, Check] = {
-    "icmp": IcmpCheck(),
-    "tcp": TcpCheck(),
-    "http": HttpCheck(),
-}
+
+def _default_registry() -> dict[str, Check]:
+    return {
+        "icmp": IcmpCheck(),
+        "tcp": TcpCheck(),
+        "http": HttpCheck(),
+        "snmp_oid": SnmpOidCheck(),
+    }
+
+
+DEFAULT_REGISTRY: dict[str, Check] = _default_registry()
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,6 +69,7 @@ async def run_once(
     now: datetime,
     check_registry: dict[str, Check] | None = None,
     notifications_logfile: Path | None = None,
+    vault: Vault | None = None,
 ) -> RunSummary:
     registry = check_registry if check_registry is not None else DEFAULT_REGISTRY
     due = mon_dal.list_due(conn, now=now)
@@ -61,15 +78,34 @@ async def run_once(
     # notification targets.
     sinks = notif_dal.list_all(conn, enabled_only=True)
 
+    # Per-cycle credential cache: credential_id -> resolved context object.
+    cred_cache: dict[int, Any] = {}
+
+    # SNMP client is stateless; construct once per cycle.
+    snmp_client = PysnmpBackend()
+
     # Dispatch all due checks concurrently.
     tasks = []
     for check in due:
         impl = registry.get(check.kind)
         if impl is None:
             continue
+        try:
+            config = _resolve_config(
+                check, conn=conn, vault=vault,
+                snmp_client=snmp_client, cred_cache=cred_cache,
+            )
+        except _ConfigError as exc:
+            # Pre-run config failures still write a result + surface as a fail.
+            mon_dal.record_result(
+                conn, check_id=check.id, asset_id=check.asset_id,
+                status="fail", latency_ms=None, detail=str(exc), now=now,
+            )
+            continue
         tasks.append(
             _run_one(
                 check, impl, conn, now,
+                config=config,
                 sinks=sinks,
                 notifications_logfile=notifications_logfile,
             )
@@ -89,6 +125,61 @@ async def run_once(
     )
 
 
+class _ConfigError(RuntimeError):
+    """Raised before the check runs when its configuration is unusable."""
+
+
+def _resolve_config(
+    check: mon_dal.MonitoringCheck,
+    *,
+    conn: sqlite3.Connection,
+    vault: Vault | None,
+    snmp_client: Any,
+    cred_cache: dict[int, Any],
+) -> dict[str, Any]:
+    """Assemble the **config kwargs dict passed to Check.run for `check`."""
+    if check.kind == "icmp":
+        return {}
+    if check.kind == "tcp":
+        return {"port": check.port} if check.port is not None else {}
+    if check.kind == "http":
+        config: dict[str, Any] = {}
+        if check.port is not None:
+            config["port"] = check.port
+        if check.path is not None:
+            config["path"] = check.path
+        return config
+    if check.kind == "snmp_oid":
+        if check.credential_id is None:
+            raise _ConfigError("snmp_oid check has no credential_id")
+        if vault is None:
+            raise _ConfigError("snmp_oid check requires unlocked vault")
+        snmp_auth = cred_cache.get(check.credential_id)
+        if snmp_auth is None:
+            info = cred_dal.get_by_id(conn, check.credential_id)
+            if info is None:
+                raise _ConfigError(f"credential id={check.credential_id} not found")
+            if info.kind not in {"snmp_v2c", "snmp_v3"}:
+                raise _ConfigError(
+                    f"credential {info.label!r} is {info.kind}, "
+                    "snmp_oid requires snmp_v2c or snmp_v3"
+                )
+            secret = cred_dal.get_secret(conn, credential_id=info.id, vault=vault)
+            snmp_auth = cred_to_snmp_auth(info, secret)
+            cred_cache[check.credential_id] = snmp_auth
+        return {
+            "oid": check.oid,
+            "expected_value": check.expected_value,
+            "comparator": check.comparator,
+            "timeout_seconds": check.timeout_seconds,
+            "snmp_auth": snmp_auth,
+            "snmp_client": snmp_client,
+        }
+    if check.kind == "ssh_command":
+        raise _ConfigError("ssh_command check kind not yet wired")
+    raise _ConfigError(f"unknown check kind {check.kind!r}")
+
+
 @dataclass(frozen=True, slots=True)
 class _Outcome:
     status: str
@@ -101,6 +192,7 @@ async def _run_one(
     conn: sqlite3.Connection,
     now: datetime,
     *,
+    config: dict[str, Any],
     sinks: list,
     notifications_logfile: Path | None,
 ) -> _Outcome:
@@ -114,12 +206,6 @@ async def _run_one(
             now=now,
         )
         return _Outcome(status="fail", transitioned=False)
-
-    config: dict[str, object] = {}
-    if check.port is not None:
-        config["port"] = check.port
-    if check.path is not None:
-        config["path"] = check.path
 
     try:
         result: CheckResult = await impl.run(target=target, **config)

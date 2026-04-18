@@ -90,6 +90,21 @@ def get_by_label(conn: sqlite3.Connection, label: str) -> CredentialInfo | None:
     )
 
 
+def get_by_id(conn: sqlite3.Connection, credential_id: int) -> CredentialInfo | None:
+    row = conn.execute(
+        "SELECT id, label, kind, created_at FROM credentials WHERE id = ?",
+        (credential_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    return CredentialInfo(
+        id=int(row["id"]),
+        label=row["label"],
+        kind=row["kind"],
+        created_at=datetime.fromisoformat(row["created_at"]),
+    )
+
+
 def get_secret(
     conn: sqlite3.Connection,
     *,

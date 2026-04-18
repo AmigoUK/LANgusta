@@ -636,12 +636,41 @@ monitor_app = typer.Typer(help="Configure and run monitoring checks.")
 @monitor_app.command("enable")
 def monitor_enable(
     asset: int = typer.Option(..., "--asset", help="Asset id to monitor."),
-    kind: str = typer.Option(..., "--kind", help="icmp | tcp | http"),
+    kind: str = typer.Option(..., "--kind", help="icmp | tcp | http | snmp_oid | ssh_command"),
     interval: int = typer.Option(60, "--interval", help="Seconds between checks."),
-    port: int | None = typer.Option(None, "--port", help="Port for tcp/http."),
+    port: int | None = typer.Option(None, "--port", help="Port for tcp/http/ssh."),
     path: str | None = typer.Option(None, "--path", help="URL path for http."),
     target: str | None = typer.Option(
         None, "--target", help="Override asset primary_ip if set.",
+    ),
+    oid: str | None = typer.Option(None, "--oid", help="OID to poll (snmp_oid)."),
+    expected: str | None = typer.Option(
+        None, "--expected", help="Expected value for snmp_oid when --comparator set.",
+    ),
+    comparator: str | None = typer.Option(
+        None, "--comparator",
+        help="eq | neq | contains | gt | lt (snmp_oid). Requires --expected.",
+    ),
+    command: str | None = typer.Option(
+        None, "--command", help="Shell command to run (ssh_command).",
+    ),
+    username: str | None = typer.Option(
+        None, "--user", help="SSH username (ssh_command).",
+    ),
+    success_exit: int | None = typer.Option(
+        None, "--success-exit",
+        help="Expected exit code for success (ssh_command; default 0).",
+    ),
+    stdout_pattern: str | None = typer.Option(
+        None, "--stdout-pattern",
+        help="Regex stdout must match for success (ssh_command).",
+    ),
+    timeout: float | None = typer.Option(
+        None, "--timeout", help="Per-check timeout in seconds.",
+    ),
+    credential_label: str | None = typer.Option(
+        None, "--credential-label",
+        help="Credential label (required for snmp_oid and ssh_command).",
     ),
 ) -> None:
     """Enable a monitoring check against an asset."""
@@ -651,6 +680,22 @@ def monitor_enable(
             err=True,
         )
         raise typer.Exit(code=2)
+    if comparator is not None and expected is None:
+        typer.echo("error: --comparator requires --expected", err=True)
+        raise typer.Exit(code=2)
+
+    credential_id: int | None = None
+    if credential_label is not None:
+        with connect(paths.db_path()) as conn:
+            info = cred_dal.get_by_label(conn, credential_label)
+        if info is None:
+            typer.echo(
+                f"error: no credential with label {credential_label!r}",
+                err=True,
+            )
+            raise typer.Exit(code=1)
+        credential_id = info.id
+
     now = datetime.now(UTC)
     with connect(paths.db_path()) as conn:
         try:
@@ -658,6 +703,10 @@ def monitor_enable(
                 conn, asset_id=asset, kind=kind,
                 interval_seconds=interval, target=target,
                 port=port, path=path, now=now,
+                oid=oid, expected_value=expected, comparator=comparator,
+                command=command, success_exit_code=success_exit,
+                stdout_pattern=stdout_pattern, timeout_seconds=timeout,
+                credential_id=credential_id, username=username,
             )
         except ValueError as exc:
             typer.echo(f"error: {exc}", err=True)
@@ -689,6 +738,16 @@ def monitor_list() -> None:
             bits.append(f"port={c.port}")
         if c.path is not None:
             bits.append(f"path={c.path}")
+        if c.oid is not None:
+            bits.append(f"oid={c.oid}")
+        if c.comparator is not None:
+            bits.append(f"{c.comparator} {c.expected_value!r}")
+        if c.command is not None:
+            bits.append(f"cmd={c.command!r}")
+        if c.username is not None:
+            bits.append(f"user={c.username}")
+        if c.credential_id is not None:
+            bits.append(f"cred={c.credential_id}")
         bits.append("enabled" if c.enabled else "disabled")
         if c.last_status is not None:
             bits.append(f"last={c.last_status}")
@@ -700,11 +759,17 @@ def monitor_run() -> None:
     """Execute one cycle of due checks and exit."""
     from langusta.monitor.runner import run_once
 
+    # Unlock the vault only when at least one configured check needs it, so
+    # icmp/tcp/http-only deployments don't require the master password.
+    with connect(paths.db_path()) as conn:
+        needs_vault = mon_dal.has_cred_backed_check(conn)
+    vault = _unlock_vault() if needs_vault else None
+
     now = datetime.now(UTC)
     logfile = paths.langusta_home() / "notifications.log"
     with connect(paths.db_path()) as conn:
         summary = asyncio.run(
-            run_once(conn, now=now, notifications_logfile=logfile),
+            run_once(conn, now=now, notifications_logfile=logfile, vault=vault),
         )
     typer.echo(
         f"executed {summary.executed} check(s) "
@@ -789,13 +854,20 @@ def monitor_daemon(
         )
         raise typer.Exit(code=2)
 
+    # Unlock the vault once up-front; the daemon holds it in memory for the
+    # life of the process. Only required when cred-backed checks are
+    # configured (snmp_oid, ssh_command).
+    with connect(paths.db_path()) as conn:
+        needs_vault = mon_dal.has_cred_backed_check(conn)
+    vault = _unlock_vault() if needs_vault else None
+
     typer.echo(f"langusta monitor daemon — cycle every {interval}s (Ctrl+C to stop)")
     logfile = paths.langusta_home() / "notifications.log"
     while True:
         now = datetime.now(UTC)
         with connect(paths.db_path()) as conn:
             summary = asyncio.run(
-                run_once(conn, now=now, notifications_logfile=logfile),
+                run_once(conn, now=now, notifications_logfile=logfile, vault=vault),
             )
         typer.echo(
             f"[{now.isoformat(timespec='seconds')}] "
