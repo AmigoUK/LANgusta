@@ -18,6 +18,7 @@ from textual.widgets import DataTable, Footer, Header, Static
 from langusta import paths
 from langusta.db import proposed_changes as pc_dal
 from langusta.db.connection import connect
+from langusta.tui.widgets.heartbeat import HeartbeatBar
 
 
 class ReviewQueueScreen(Screen):
@@ -58,6 +59,7 @@ class ReviewQueueScreen(Screen):
                     r.current_provenance.value,
                 )
             yield table
+        yield HeartbeatBar()
         yield Footer()
 
     def _selected_pc_id(self) -> int | None:

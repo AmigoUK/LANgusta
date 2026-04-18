@@ -79,3 +79,4 @@ logs/
 # Build artefacts
 *.whl
 *.tar.gz
+snapshot_report.html
