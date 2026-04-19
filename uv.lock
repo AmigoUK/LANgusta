@@ -492,7 +492,7 @@ wheels = [
 
 [[package]]
 name = "langusta"
-version = "0.2.0rc4"
+version = "0.2.0rc5"
 source = { editable = "." }
 dependencies = [
     { name = "apscheduler" },
