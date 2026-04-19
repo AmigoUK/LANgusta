@@ -8,6 +8,20 @@ Pre-1.0 versions may introduce breaking changes on any minor bump.
 
 ## [Unreleased]
 
+## [0.2.0rc6] — 2026-04-19
+
+### Added
+
+- **`monitor start`** — spawn the daemon in a new session via `subprocess.Popen(start_new_session=True)`. stdout/stderr captured to `~/.langusta/monitor.log`; PID recorded in `~/.langusta/monitor.pid`. Refuses to start when a live PID is already recorded; cleans up stale PID files automatically.
+- **`monitor stop`** — reads the PID file, sends SIGTERM, waits up to `--timeout` seconds, then clears the PID file. Reports cleanly when nothing is running.
+- **`monitor status`** — now reports PID-file state (absent / running / stale) in addition to the existing heartbeat freshness.
+- New module `monitor.daemon_control` with `read_pid_file`, `write_pid_file`, `clear_pid_file`, `is_process_alive`, `stop_via_pid_file`. 12 unit tests.
+- `paths.monitor_pid_path()` and `paths.monitor_log_path()`.
+- `monitor daemon --foreground` now writes + clears the PID file for its own process so `status` works for the supervised path too.
+- **ADR-0006** documents the choice of `start_new_session=True` over a traditional double-fork, and the scope boundary against ADR-0002 (systemd/launchd via `monitor install-service` remains the recommended deployment).
+
+Addresses deferred backlog #7 in spirit — LANgusta does not double-fork, but `monitor start` provides a fully-detached alternative for users who don't want to configure a service manager.
+
 ## [0.2.0rc5] — 2026-04-19
 
 ### Added
@@ -149,7 +163,8 @@ First alpha release candidate. Delivers the v1 Must-Have scope from the [develop
 - Lansweeper CSV / NetBox API import (the competitor on-ramp) — first post-v1 target.
 - External secret-store integration (1Password CLI / Bitwarden CLI / Vault).
 
-[Unreleased]: https://github.com/AmigoUK/LANgusta/compare/0.2.0rc5...HEAD
+[Unreleased]: https://github.com/AmigoUK/LANgusta/compare/0.2.0rc6...HEAD
+[0.2.0rc6]: https://github.com/AmigoUK/LANgusta/releases/tag/0.2.0rc6
 [0.2.0rc5]: https://github.com/AmigoUK/LANgusta/releases/tag/0.2.0rc5
 [0.2.0rc4]: https://github.com/AmigoUK/LANgusta/releases/tag/0.2.0rc4
 [0.2.0rc3]: https://github.com/AmigoUK/LANgusta/releases/tag/0.2.0rc3
