@@ -8,6 +8,30 @@ Pre-1.0 versions may introduce breaking changes on any minor bump.
 
 ## [Unreleased]
 
+## [0.2.0] — 2026-04-19
+
+Stable 0.2.0. Consolidates rc1..rc6 into one minor release. No code change beyond the version bump.
+
+### Rollup of new features since 0.1.0-rc1
+
+- **Importer on-ramp** (rc2): `import-lansweeper` (CSV), `import-netbox` (API).
+- **SNMP v3 authPriv + new check kinds** (rc2): `cred add --kind snmp_v3`; `monitor enable --kind snmp_oid`; `monitor enable --kind ssh_command`.
+- **Notification sinks** (rc2): pluggable `log` / `webhook` / `smtp` sinks; `notify sink add/list/rm`.
+- **TUI heartbeat indicator** (rc2): footer strip shows monitor daemon freshness.
+- **Security fix** (rc2): pyasn1 bumped past DoS / unbounded-recursion CVE.
+- **TUI monitor-config screen** (rc3): `m` on the inventory opens a screen to list and toggle configured checks; new DAL `set_check_enabled`.
+- **Vim keybindings preset** (rc4): opt in with `LANGUSTA_KEYBINDINGS=vim`; j/k/g/G/ctrl+d/ctrl+u layered on top of defaults.
+- **TOFU SSH host-key pinning** (rc5): `ssh_command` checks record host keys in `~/.langusta/known_hosts` on first connect, verify thereafter; rotated keys never auto-accepted.
+- **`monitor start` / `monitor stop` + PID file** (rc6): detached daemon via `subprocess.Popen(start_new_session=True)`; `monitor status` now reports PID-file state alongside heartbeat. **ADR-0006** documents the design.
+
+### Test count
+
+536 tests passing. Ruff + boundary lint clean. Schema at v7.
+
+### Dependencies
+
+`asyncssh>=2.14` added; runtime deps now 10 / 15 budget.
+
 ## [0.2.0rc6] — 2026-04-19
 
 ### Added
@@ -163,7 +187,8 @@ First alpha release candidate. Delivers the v1 Must-Have scope from the [develop
 - Lansweeper CSV / NetBox API import (the competitor on-ramp) — first post-v1 target.
 - External secret-store integration (1Password CLI / Bitwarden CLI / Vault).
 
-[Unreleased]: https://github.com/AmigoUK/LANgusta/compare/0.2.0rc6...HEAD
+[Unreleased]: https://github.com/AmigoUK/LANgusta/compare/0.2.0...HEAD
+[0.2.0]: https://github.com/AmigoUK/LANgusta/releases/tag/0.2.0
 [0.2.0rc6]: https://github.com/AmigoUK/LANgusta/releases/tag/0.2.0rc6
 [0.2.0rc5]: https://github.com/AmigoUK/LANgusta/releases/tag/0.2.0rc5
 [0.2.0rc4]: https://github.com/AmigoUK/LANgusta/releases/tag/0.2.0rc4
