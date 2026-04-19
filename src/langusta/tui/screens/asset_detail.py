@@ -19,6 +19,7 @@ from langusta import paths
 from langusta.db import assets as assets_dal
 from langusta.db import timeline as tl_dal
 from langusta.db.connection import connect
+from langusta.tui.widgets.heartbeat import HeartbeatBar
 from langusta.tui.widgets.timeline import TimelineWidget
 
 
@@ -50,6 +51,7 @@ class AssetDetailScreen(Screen):
 
         if asset is None:
             yield Static(f"Asset #{self._asset_id} not found.", classes="muted")
+            yield HeartbeatBar()
             yield Footer()
             return
 
@@ -83,6 +85,7 @@ class AssetDetailScreen(Screen):
         with Vertical():
             yield TimelineWidget(entries)
 
+        yield HeartbeatBar()
         yield Footer()
 
     def action_new_note(self) -> None:

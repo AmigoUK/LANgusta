@@ -18,6 +18,7 @@ from langusta import paths
 from langusta.core.models import Asset
 from langusta.db import search as search_dal
 from langusta.db.connection import connect
+from langusta.tui.widgets.heartbeat import HeartbeatBar
 
 
 class SearchScreen(Screen):
@@ -52,6 +53,7 @@ class SearchScreen(Screen):
                 id="hint",
             )
             yield DataTable(cursor_type="row", id="results")
+        yield HeartbeatBar()
         yield Footer()
 
     def on_mount(self) -> None:

@@ -17,6 +17,7 @@ from textual.widgets import DataTable, Footer, Header, Static
 from langusta import paths
 from langusta.db import assets as assets_dal
 from langusta.db.connection import connect
+from langusta.tui.widgets.heartbeat import HeartbeatBar
 
 
 class InventoryScreen(Screen):
@@ -53,6 +54,7 @@ class InventoryScreen(Screen):
                 )
             yield table
 
+        yield HeartbeatBar()
         yield Footer()
 
     def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:

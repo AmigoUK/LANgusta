@@ -2,7 +2,7 @@
 
 > Local-first, self-hosted asset registry + network scanner + lightweight monitoring, for small IT teams and MSP technicians managing networks up to 250 devices.
 
-**Status:** 0.2.0-rc1 — alpha. v1 Must-Have shipped in 0.1.0-rc1; 0.2.0-rc1 adds SNMP v3 authPriv for `scan --snmp`, `snmp_oid` and `ssh_command` monitor check kinds, and a configurable concurrency cap on the monitor runner.
+**Status:** 0.2.0-rc2 — alpha. v1 Must-Have shipped in 0.1.0-rc1. 0.2.0-rc1 added SNMP v3 authPriv, `snmp_oid`, and `ssh_command` check kinds; 0.2.0-rc2 adds a TUI heartbeat indicator above the footer so you can see daemon freshness at a glance.
 
 ## What it does
 
