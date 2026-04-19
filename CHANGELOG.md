@@ -8,6 +8,13 @@ Pre-1.0 versions may introduce breaking changes on any minor bump.
 
 ## [Unreleased]
 
+## [0.2.0rc3] — 2026-04-19
+
+### Added
+
+- **Monitor config TUI screen** — new `m` binding on the inventory screen opens `MonitorConfigScreen`, which lists every configured check (id, asset, kind, target, interval, enabled flag, last status). Press `e` to toggle enabled state for the highlighted check; `q` to go back. Clears deferred backlog #4 part 2.
+- `db.monitoring.set_check_enabled(conn, check_id, enabled=bool)` — the DAL primitive used by the toggle action (unit-tested both directions).
+
 ## [0.2.0rc2] — 2026-04-19
 
 Second alpha release candidate. Rolls up post-v1 work: importer on-ramp, SNMP v3, two new monitor check kinds, notification sinks, TUI heartbeat, and a security dependency bump.
@@ -124,6 +131,7 @@ First alpha release candidate. Delivers the v1 Must-Have scope from the [develop
 - Lansweeper CSV / NetBox API import (the competitor on-ramp) — first post-v1 target.
 - External secret-store integration (1Password CLI / Bitwarden CLI / Vault).
 
-[Unreleased]: https://github.com/AmigoUK/LANgusta/compare/0.2.0rc2...HEAD
+[Unreleased]: https://github.com/AmigoUK/LANgusta/compare/0.2.0rc3...HEAD
+[0.2.0rc3]: https://github.com/AmigoUK/LANgusta/releases/tag/0.2.0rc3
 [0.2.0rc2]: https://github.com/AmigoUK/LANgusta/releases/tag/0.2.0rc2
 [0.1.0rc1]: https://github.com/AmigoUK/LANgusta/releases/tag/0.1.0rc1

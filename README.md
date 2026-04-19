@@ -2,7 +2,7 @@
 
 > Local-first, self-hosted asset registry + network scanner + lightweight monitoring, for small IT teams and MSP technicians managing networks up to 250 devices.
 
-**Status:** 0.2.0-rc2 — alpha. v1 Must-Have shipped in 0.1.0-rc1. 0.2.0-rc1 added SNMP v3 authPriv, `snmp_oid`, and `ssh_command` check kinds; 0.2.0-rc2 adds a TUI heartbeat indicator above the footer so you can see daemon freshness at a glance.
+**Status:** 0.2.0-rc3 — alpha. v1 Must-Have shipped in 0.1.0-rc1. 0.2.0-rc1 added SNMP v3 authPriv, `snmp_oid`, and `ssh_command` check kinds; 0.2.0-rc2 added a TUI heartbeat indicator above the footer; 0.2.0-rc3 adds a TUI monitor-config screen (press `m` on the inventory) to list and toggle configured checks without leaving the TUI.
 
 ## What it does
 

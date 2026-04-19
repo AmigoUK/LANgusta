@@ -168,6 +168,15 @@ def disable_check(conn: sqlite3.Connection, check_id: int) -> None:
     )
 
 
+def set_check_enabled(
+    conn: sqlite3.Connection, check_id: int, *, enabled: bool,
+) -> None:
+    conn.execute(
+        "UPDATE monitoring_checks SET enabled = ? WHERE id = ?",
+        (1 if enabled else 0, check_id),
+    )
+
+
 _CHECK_COLS = (
     "id, asset_id, kind, target, port, path, interval_seconds, enabled, "
     "created_at, last_run_at, last_status, "
