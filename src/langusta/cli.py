@@ -25,6 +25,7 @@ from langusta.db import notifications as notif_dal
 from langusta.db import proposed_changes as pc_dal
 from langusta.db.connection import connect
 from langusta.db.migrate import latest_schema_version, migrate
+from langusta.monitor import daemon_control
 from langusta.platform import get_backend
 
 
@@ -861,36 +862,126 @@ def monitor_daemon(
         needs_vault = mon_dal.has_cred_backed_check(conn)
     vault = _unlock_vault() if needs_vault else None
 
+    pid_path = paths.monitor_pid_path()
+    daemon_control.write_pid_file(pid_path, os.getpid())
     typer.echo(f"langusta monitor daemon — cycle every {interval}s (Ctrl+C to stop)")
     logfile = paths.langusta_home() / "notifications.log"
-    while True:
-        now = datetime.now(UTC)
-        with connect(paths.db_path()) as conn:
-            summary = asyncio.run(
-                run_once(conn, now=now, notifications_logfile=logfile, vault=vault),
+    try:
+        while True:
+            now = datetime.now(UTC)
+            with connect(paths.db_path()) as conn:
+                summary = asyncio.run(
+                    run_once(conn, now=now, notifications_logfile=logfile, vault=vault),
+                )
+            typer.echo(
+                f"[{now.isoformat(timespec='seconds')}] "
+                f"executed {summary.executed} "
+                f"({summary.ok_count} ok, {summary.fail_count} fail, "
+                f"{summary.transitions} transitions)"
             )
+            _time.sleep(interval)
+    finally:
+        daemon_control.clear_pid_file(pid_path)
+
+
+@monitor_app.command("start")
+def monitor_start(
+    interval: int = typer.Option(
+        60, "--interval", help="Seconds between monitor cycles.",
+    ),
+) -> None:
+    """Spawn the monitor daemon in a new session (backgrounded).
+
+    This is a convenience for users who don't want to configure
+    systemd/launchd via `monitor install-service`. The spawned process
+    runs `langusta monitor daemon --foreground --interval <N>` in a new
+    session so it survives terminal close. stdout / stderr are appended
+    to `~/.langusta/monitor.log`.
+    """
+    import subprocess
+    import sys
+
+    pid_path = paths.monitor_pid_path()
+    state = daemon_control.read_pid_file(pid_path)
+    if state.alive:
         typer.echo(
-            f"[{now.isoformat(timespec='seconds')}] "
-            f"executed {summary.executed} "
-            f"({summary.ok_count} ok, {summary.fail_count} fail, "
-            f"{summary.transitions} transitions)"
+            f"monitor already running (pid {state.pid}); "
+            f"run `langusta monitor stop` first",
+            err=True,
         )
-        _time.sleep(interval)
+        raise typer.Exit(code=1)
+    # Stale file — clear it before spawning.
+    daemon_control.clear_pid_file(pid_path)
+
+    log_path = paths.monitor_log_path()
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    log = log_path.open("a", encoding="utf-8")
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "langusta", "monitor", "daemon",
+         "--foreground", "--interval", str(interval)],
+        stdout=log, stderr=subprocess.STDOUT,
+        stdin=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+    # The spawned process writes its own PID into the file when it
+    # reaches `monitor_daemon` above; record the subprocess PID here as
+    # well so `stop` works even if the child hasn't got that far yet.
+    daemon_control.write_pid_file(pid_path, proc.pid)
+    typer.echo(
+        f"monitor started (pid {proc.pid}), logging to {log_path}",
+    )
+
+
+@monitor_app.command("stop")
+def monitor_stop(
+    timeout: float = typer.Option(
+        5.0, "--timeout", help="Seconds to wait for graceful shutdown.",
+    ),
+) -> None:
+    """Stop the monitor daemon recorded in `~/.langusta/monitor.pid`."""
+    pid_path = paths.monitor_pid_path()
+    state = daemon_control.read_pid_file(pid_path)
+    if state.pid is None:
+        typer.echo("no monitor daemon recorded in PID file", err=True)
+        raise typer.Exit(code=1)
+    if not state.alive:
+        typer.echo(f"stale PID file (pid {state.pid} not running); cleared")
+        daemon_control.clear_pid_file(pid_path)
+        return
+    result = daemon_control.stop_via_pid_file(pid_path, timeout_seconds=timeout)
+    if result.alive:
+        typer.echo(
+            f"pid {result.pid} did not exit within {timeout}s — "
+            f"inspect or SIGKILL manually",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+    typer.echo(f"stopped monitor daemon (pid {result.pid})")
 
 
 @monitor_app.command("status")
 def monitor_status() -> None:
-    """Show daemon heartbeat freshness."""
+    """Show daemon heartbeat freshness and PID-file state."""
     now = datetime.now(UTC)
     with connect(paths.db_path()) as conn:
         hb = mon_dal.get_heartbeat(conn)
+
+    pid_path = paths.monitor_pid_path()
+    pid_state = daemon_control.read_pid_file(pid_path)
+    if pid_state.pid is None:
+        typer.echo(f"pid file: absent  ({pid_path})")
+    elif pid_state.alive:
+        typer.echo(f"pid file: pid {pid_state.pid} (running)")
+    else:
+        typer.echo(f"pid file: pid {pid_state.pid} (stale — process not running)")
+
     if hb is None:
-        typer.echo("no heartbeat recorded — monitor has never run")
+        typer.echo("heartbeat: never recorded — monitor has never run")
         return
     age = (now - hb).total_seconds()
     stale = mon_dal.is_heartbeat_stale(hb, now=now, tolerance_seconds=120)
     marker = "STALE" if stale else "fresh"
-    typer.echo(f"heartbeat {hb.isoformat()}  ({int(age)}s ago, {marker})")
+    typer.echo(f"heartbeat: {hb.isoformat()}  ({int(age)}s ago, {marker})")
 
 
 app.add_typer(monitor_app, name="monitor")
