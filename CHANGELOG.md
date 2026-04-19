@@ -8,6 +8,49 @@ Pre-1.0 versions may introduce breaking changes on any minor bump.
 
 ## [Unreleased]
 
+## [0.2.0rc2] — 2026-04-19
+
+Second alpha release candidate. Rolls up post-v1 work: importer on-ramp, SNMP v3, two new monitor check kinds, notification sinks, TUI heartbeat, and a security dependency bump.
+
+### Added
+
+**Importer on-ramp**
+- `langusta import-lansweeper <csv>` — maps Lansweeper asset export columns to LANgusta's identity/provenance model; unknown columns go to `notes`.
+- `langusta import-netbox --url --token` — pulls NetBox DCIM assets via API, preserves site/rack/role metadata.
+
+**SNMP v3 + new check kinds**
+- `cred add --kind snmp_v3` prompts for the 5 USM fields (user, authProtocol, authPass, privProtocol, privPass) or reads `LANGUSTA_CRED_V3_*` env vars.
+- `langusta scan --snmp <label>` now accepts v3 credentials and performs authPriv walks.
+- `monitor enable --kind snmp_oid` — walks a given OID and evaluates against `--expected` via `--comparator {eq,ne,lt,le,gt,ge,contains,regex}`.
+- `monitor enable --kind ssh_command` — runs a command over SSH, asserts `--success-exit` and optional `--stdout-pattern` regex; concurrency capped to protect target hosts. Known limitation: `asyncssh` called with `known_hosts=None` (tech debt, to be addressed post-rc).
+
+**Notifications**
+- Pluggable sinks: `log` (default, timeline), `webhook` (JSON POST), `smtp`.
+- `notify sink add/list/rm` CLI.
+- Monitor state transitions fan out to configured sinks.
+
+**TUI heartbeat indicator**
+- New `Heartbeat` widget above the footer on inventory, asset-detail, search, and review-queue screens.
+- Shows daemon freshness based on `meta.daemon_heartbeat` (last-seen seconds / minutes / hours).
+- Hypothesis-tested formatter + widget + snapshot test.
+
+### Fixed
+
+- `pyasn1` bumped `0.6.0 → 0.6.3` past the DoS / unbounded-recursion CVE (transitive via `pysnmp`).
+
+### Schema
+
+- Migration 006 — notification sinks table.
+- Migration 007 — `monitoring_checks` table-swap adds `oid`, `expected_value`, `comparator`, `command`, `success_exit_code`, `stdout_pattern`, `timeout_seconds`, `credential_id`, `username` columns. Schema now at v7.
+
+### Dependencies
+
+- Added `asyncssh>=2.14` (1 new runtime dep). Budget: 10 / 15.
+
+### Test count
+
+491 tests passing (was 357 at 0.1.0rc1). Ruff + boundary lint clean.
+
 ## [0.1.0rc1] — 2026-04-17
 
 First alpha release candidate. Delivers the v1 Must-Have scope from the [development plan](docs/development-plan.md). Ready for early users who are comfortable reporting issues.
@@ -81,5 +124,6 @@ First alpha release candidate. Delivers the v1 Must-Have scope from the [develop
 - Lansweeper CSV / NetBox API import (the competitor on-ramp) — first post-v1 target.
 - External secret-store integration (1Password CLI / Bitwarden CLI / Vault).
 
-[Unreleased]: https://github.com/AmigoUK/LANgusta/compare/0.1.0rc1...HEAD
+[Unreleased]: https://github.com/AmigoUK/LANgusta/compare/0.2.0rc2...HEAD
+[0.2.0rc2]: https://github.com/AmigoUK/LANgusta/releases/tag/0.2.0rc2
 [0.1.0rc1]: https://github.com/AmigoUK/LANgusta/releases/tag/0.1.0rc1
