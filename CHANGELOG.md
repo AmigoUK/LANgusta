@@ -8,6 +8,18 @@ Pre-1.0 versions may introduce breaking changes on any minor bump.
 
 ## [Unreleased]
 
+## [0.2.0rc5] — 2026-04-19
+
+### Added
+
+- **SSH host-key pinning (TOFU)** for `ssh_command` monitor checks. First connection to a given `host:port` records the server's host key in `~/.langusta/known_hosts`; subsequent connections verify against the recorded key and fail with a clear error on mismatch. LANgusta never auto-accepts a rotated key — operators must remove the entry from the file to re-pin. File format is OpenSSH-compatible (`[host]:port` bracket syntax for non-default ports, `host` bare for port 22). Clears deferred backlog #8.
+- `paths.known_hosts_path()` — canonical location for the store (`~/.langusta/known_hosts`).
+- New module `monitor.ssh.known_hosts` with `KnownHostsStore`, `HostKeyEntry`, `KeyNotPinnedError`, `KeyMismatchError`.
+
+### Changed
+
+- `AsyncsshBackend` no longer calls `asyncssh.connect` with `known_hosts=None` unconditionally. Pinned hosts use the known_hosts file; first-use hosts connect without verification just long enough to capture and record the server key, then verification is enforced on subsequent runs.
+
 ## [0.2.0rc4] — 2026-04-19
 
 ### Added
@@ -137,7 +149,8 @@ First alpha release candidate. Delivers the v1 Must-Have scope from the [develop
 - Lansweeper CSV / NetBox API import (the competitor on-ramp) — first post-v1 target.
 - External secret-store integration (1Password CLI / Bitwarden CLI / Vault).
 
-[Unreleased]: https://github.com/AmigoUK/LANgusta/compare/0.2.0rc4...HEAD
+[Unreleased]: https://github.com/AmigoUK/LANgusta/compare/0.2.0rc5...HEAD
+[0.2.0rc5]: https://github.com/AmigoUK/LANgusta/releases/tag/0.2.0rc5
 [0.2.0rc4]: https://github.com/AmigoUK/LANgusta/releases/tag/0.2.0rc4
 [0.2.0rc3]: https://github.com/AmigoUK/LANgusta/releases/tag/0.2.0rc3
 [0.2.0rc2]: https://github.com/AmigoUK/LANgusta/releases/tag/0.2.0rc2

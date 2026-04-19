@@ -2,7 +2,7 @@
 
 > Local-first, self-hosted asset registry + network scanner + lightweight monitoring, for small IT teams and MSP technicians managing networks up to 250 devices.
 
-**Status:** 0.2.0-rc4 — alpha. v1 Must-Have shipped in 0.1.0-rc1. 0.2.0-rc1 added SNMP v3 authPriv, `snmp_oid`, and `ssh_command` check kinds; 0.2.0-rc2 added a TUI heartbeat indicator above the footer; 0.2.0-rc3 added a TUI monitor-config screen (press `m` on the inventory); 0.2.0-rc4 adds an optional vim-style keybindings preset (`LANGUSTA_KEYBINDINGS=vim`) — j/k/g/G/ctrl+d/ctrl+u for navigation.
+**Status:** 0.2.0-rc5 — alpha. v1 Must-Have shipped in 0.1.0-rc1. 0.2.0-rc1 added SNMP v3 authPriv, `snmp_oid`, and `ssh_command` check kinds; 0.2.0-rc2 added a TUI heartbeat indicator above the footer; 0.2.0-rc3 added a TUI monitor-config screen (press `m` on the inventory); 0.2.0-rc4 added an optional vim-style keybindings preset (`LANGUSTA_KEYBINDINGS=vim`); 0.2.0-rc5 adds TOFU SSH host-key pinning for `ssh_command` monitor checks — keys are recorded in `~/.langusta/known_hosts` on first connect and verified thereafter.
 
 ## What it does
 

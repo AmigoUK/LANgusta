@@ -29,3 +29,8 @@ def backups_dir() -> Path:
 
 def config_path() -> Path:
     return langusta_home() / "config.toml"
+
+
+def known_hosts_path() -> Path:
+    """SSH known_hosts file for monitor `ssh_command` checks (TOFU)."""
+    return langusta_home() / "known_hosts"
