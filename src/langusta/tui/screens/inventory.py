@@ -4,6 +4,7 @@ Bindings:
   enter  Open asset detail.
   /      Universal search.
   r      Review queue.
+  m      Monitor config.
   q      Quit (inherited from app root).
 """
 
@@ -26,6 +27,7 @@ class InventoryScreen(Screen):
     BINDINGS = (
         Binding("slash", "open_search", "Search", priority=False),
         Binding("r", "open_review", "Review", priority=False),
+        Binding("m", "open_monitor", "Monitor", priority=False),
     )
 
     def compose(self) -> ComposeResult:
@@ -73,3 +75,8 @@ class InventoryScreen(Screen):
         from langusta.tui.screens.review_queue import ReviewQueueScreen
 
         self.app.push_screen(ReviewQueueScreen())
+
+    def action_open_monitor(self) -> None:
+        from langusta.tui.screens.monitor_config import MonitorConfigScreen
+
+        self.app.push_screen(MonitorConfigScreen())

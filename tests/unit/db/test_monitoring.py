@@ -89,6 +89,31 @@ def test_disable_check_flips_enabled_false(seeded) -> None:
     assert check.enabled is False
 
 
+def test_set_check_enabled_flips_disabled_back_on(seeded) -> None:
+    db, aid = seeded
+    with connect(db) as conn:
+        cid = mon_dal.enable_check(
+            conn, asset_id=aid, kind="icmp", interval_seconds=60, now=NOW,
+        )
+        mon_dal.disable_check(conn, cid)
+        mon_dal.set_check_enabled(conn, cid, enabled=True)
+        check = mon_dal.get_by_id(conn, cid)
+    assert check is not None
+    assert check.enabled is True
+
+
+def test_set_check_enabled_false_disables(seeded) -> None:
+    db, aid = seeded
+    with connect(db) as conn:
+        cid = mon_dal.enable_check(
+            conn, asset_id=aid, kind="icmp", interval_seconds=60, now=NOW,
+        )
+        mon_dal.set_check_enabled(conn, cid, enabled=False)
+        check = mon_dal.get_by_id(conn, cid)
+    assert check is not None
+    assert check.enabled is False
+
+
 def test_list_checks_for_asset(seeded) -> None:
     db, aid = seeded
     with connect(db) as conn:
