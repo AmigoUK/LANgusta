@@ -8,6 +8,12 @@ Pre-1.0 versions may introduce breaking changes on any minor bump.
 
 ## [Unreleased]
 
+## [0.2.0rc4] — 2026-04-19
+
+### Added
+
+- **Vim-style keybindings preset** — opt in with `LANGUSTA_KEYBINDINGS=vim langusta ui`. Adds `j`/`k` (down/up), `g`/`G` (top/bottom), and `ctrl+d`/`ctrl+u` (page down/up) as non-priority aliases that layer on top of the default Textual arrow-key navigation. Additive — does not remove or remap defaults; unknown preset names degrade gracefully to `()`. Clears deferred backlog #6.
+
 ## [0.2.0rc3] — 2026-04-19
 
 ### Added
@@ -131,7 +137,8 @@ First alpha release candidate. Delivers the v1 Must-Have scope from the [develop
 - Lansweeper CSV / NetBox API import (the competitor on-ramp) — first post-v1 target.
 - External secret-store integration (1Password CLI / Bitwarden CLI / Vault).
 
-[Unreleased]: https://github.com/AmigoUK/LANgusta/compare/0.2.0rc3...HEAD
+[Unreleased]: https://github.com/AmigoUK/LANgusta/compare/0.2.0rc4...HEAD
+[0.2.0rc4]: https://github.com/AmigoUK/LANgusta/releases/tag/0.2.0rc4
 [0.2.0rc3]: https://github.com/AmigoUK/LANgusta/releases/tag/0.2.0rc3
 [0.2.0rc2]: https://github.com/AmigoUK/LANgusta/releases/tag/0.2.0rc2
 [0.1.0rc1]: https://github.com/AmigoUK/LANgusta/releases/tag/0.1.0rc1
