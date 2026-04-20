@@ -1,0 +1,27 @@
+﻿AssetName,IPAddress,Mac,Description,Manufacturer,Type,OperatingSystem,Location,Owner,URL
+core-rtr-01,10.0.1.1,aa:bb:cc:00:00:01,Edge router,Cisco,Router,IOS-XE 17.9,HQ Rack A1,net-ops,https://wiki.example.com/core-rtr-01
+core-rtr-02,10.0.1.2,aa:bb:cc:00:00:02,Edge router,Cisco,Router,IOS-XE 17.9,HQ Rack A1,net-ops,https://wiki.example.com/core-rtr-02
+branch-rtr-03,10.0.2.1,aa:bb:cc:00:00:03,Branch router,Juniper,Router,JunOS 22.3,Branch-03,net-ops,
+dist-rtr-04,10.0.3.1,aa:bb:cc:00:00:04,Distribution router,Cisco,Router,IOS-XE 17.9,DC-01 Rack 5,net-ops,
+access-sw-01,10.0.10.1,aa:bb:cc:00:00:10,Access switch,Cisco,Switch,IOS 15.2,HQ Rack B2,net-ops,
+access-sw-02,10.0.10.2,aa:bb:cc:00:00:11,Access switch,Cisco,Switch,IOS 15.2,HQ Rack B2,net-ops,
+core-sw-03,10.0.10.3,aa:bb:cc:00:00:12,Core switch,Arista,Switch,EOS 4.30,DC-01 Rack 1,net-ops,
+poe-sw-04,10.0.10.4,aa:bb:cc:00:00:13,PoE switch,HP,Switch,ArubaOS-S,Branch-03,net-ops,
+srv-web-01,10.0.20.1,aa:bb:cc:00:00:20,Primary web server,Dell,Server,Ubuntu 24.04,DC-01 Rack 3,web@example.com,https://wiki.example.com/srv-web-01
+srv-db-02,10.0.20.2,aa:bb:cc:00:00:21,Postgres primary,Dell,Server,Ubuntu 24.04,DC-01 Rack 3,db@example.com,
+srv-app-03,10.0.20.3,aa:bb:cc:00:00:22,App server,HP,Server,RHEL 9,DC-01 Rack 4,app@example.com,
+ws-eng-01,10.0.30.1,aa:bb:cc:00:00:30,Engineering workstation,Lenovo,Workstation,Windows 11,HQ Desk 14,alice@example.com,
+ws-eng-02,10.0.30.2,aa:bb:cc:00:00:31,Engineering workstation,Lenovo,Workstation,Windows 11,HQ Desk 15,bob@example.com,
+büro-lápiz-01,10.0.30.3,aa:bb:cc:00:00:32,Design workstation (unicode hostname),Apple,Workstation,macOS 14,HQ Desk 22,carol@example.com,
+ws-nomac,10.0.30.4,,Loaner laptop (MAC unknown at time of export),Dell,Workstation,Windows 11,HQ Loaner Pool,helpdesk@example.com,
+printer-hp-01,10.0.40.1,aa:bb:cc:00:00:40,"HP LaserJet print queue
+Double-sided by default; greyscale only",HP,Printer,,HQ Rack C1,helpdesk@example.com,
+printer-hp-02,10.0.40.2,aa:bb:cc:00:00:41,Colour HP printer,HP,Printer,,HQ Room 3,helpdesk@example.com,
+printer-canon-03,10.0.40.3,aa:bb:cc:00:00:42,Canon office MFP,Canon,Printer,,Branch-03,helpdesk@example.com,
+edge-fw-01,10.0.50.1,aa:bb:cc:00:00:50,Perimeter firewall,Palo Alto,Firewall,PAN-OS 11.1,DC-01 Rack 0,security@example.com,
+nas-01,10.0.60.1,aa:bb:cc:00:00:60,Backup NAS,Synology,NAS,DSM 7.2,DC-01 Rack 6,storage@example.com,
+cam-lobby,10.0.70.1,aa:bb:cc:00:00:70,Lobby IP camera,Axis,Camera,,HQ Lobby,security@example.com,
+ghost-bad-ip,999.1.1.1,aa:bb:cc:00:00:80,Malformed IP — should be flagged,,,,,
+dup-mac-row,10.0.100.1,aa:bb:cc:00:00:01,Intra-file MAC dup of core-rtr-01,,,,,,
+dup-ip-row,10.0.1.1,aa:bb:cc:00:00:90,Intra-file IP collision with core-rtr-01,,,,,,
+,,,,,,,,,
