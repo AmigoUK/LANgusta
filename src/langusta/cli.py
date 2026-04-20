@@ -585,11 +585,20 @@ def import_cmd(
 @app.command("import-lansweeper")
 def import_lansweeper_cmd(
     csv_path: str = typer.Argument(..., help="Lansweeper CSV export."),
+    dry_run: bool = typer.Option(
+        False, "--dry-run",
+        help="Parse and validate; report counts but roll back all writes.",
+    ),
+    verbose: bool = typer.Option(
+        False, "--verbose", "-v",
+        help="Print each per-row error with its line number.",
+    ),
 ) -> None:
     """Import assets from a Lansweeper CSV export (source='imported').
 
-    Duplicate MACs or IPs (colliding with rows already in the DB) are
-    skipped — run `langusta list` first to see what's already present.
+    MAC-matched rows merge into existing assets; protected-field conflicts
+    go to the review queue rather than being silently overwritten. Use
+    `--dry-run` to preview a CSV without writing.
     """
     now = datetime.now(UTC)
     path = Path(csv_path)
@@ -598,9 +607,18 @@ def import_lansweeper_cmd(
         raise typer.Exit(code=1)
     with connect(paths.db_path()) as conn:
         report = import_lansweeper_mod.import_lansweeper_csv(
-            conn, csv_path=path, now=now,
+            conn, csv_path=path, now=now, dry_run=dry_run,
         )
-    typer.echo(f"imported {report.imported}, skipped {report.skipped}")
+    prefix = "[dry-run] " if dry_run else ""
+    typer.echo(
+        f"{prefix}imported {report.imported}, updated {report.updated}, "
+        f"skipped {report.skipped}, proposed {report.proposed_changes_created}, "
+        f"review-queue {report.review_queue_entries}, "
+        f"errors {len(report.row_errors)}"
+    )
+    if verbose:
+        for err in report.row_errors:
+            typer.echo(f"  line {err.line_number}: {err.reason}")
 
 
 @app.command("import-netbox")
