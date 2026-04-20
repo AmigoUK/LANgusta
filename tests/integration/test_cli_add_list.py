@@ -107,6 +107,53 @@ def test_add_rejects_duplicate_mac_with_clear_error(tmp_path: Path) -> None:
     assert "aa:bb:cc:dd:ee:ff" in (r.stdout + (r.stderr or "")).lower()
 
 
+def test_add_refuses_second_asset_at_same_ip(tmp_path: Path) -> None:
+    """A user running `add --hostname X --ip Y` twice should NOT get two
+    assets — the second call must surface the existing asset's id instead.
+    """
+    home = _init_home(tmp_path)
+    first = _run("add", "--hostname", "router", "--ip", "192.168.1.1", home=home)
+    assert first.exit_code == 0, first.stdout
+    second = _run("add", "--hostname", "router", "--ip", "192.168.1.1", home=home)
+    assert second.exit_code != 0
+    err = (second.stdout + (second.stderr or "")).lower()
+    assert "already" in err
+    assert "192.168.1.1" in err
+
+    with connect(home / ".langusta" / "db.sqlite") as conn:
+        rows = assets_dal.list_all(conn)
+    assert len(rows) == 1  # still only one asset
+
+
+def test_add_refuses_second_asset_at_same_hostname(tmp_path: Path) -> None:
+    home = _init_home(tmp_path)
+    _run("add", "--hostname", "router", "--ip", "10.0.0.1", home=home)
+    r = _run("add", "--hostname", "router", "--ip", "10.0.0.2", home=home)
+    assert r.exit_code != 0
+    err = (r.stdout + (r.stderr or "")).lower()
+    assert "already" in err
+    assert "'router'" in err or "router" in err
+
+    with connect(home / ".langusta" / "db.sqlite") as conn:
+        rows = assets_dal.list_all(conn)
+    assert len(rows) == 1
+
+
+def test_add_force_overrides_duplicate_ip_guard(tmp_path: Path) -> None:
+    home = _init_home(tmp_path)
+    _run("add", "--hostname", "router", "--ip", "192.168.1.1", home=home)
+    r = _run(
+        "add", "--hostname", "router-backup", "--ip", "192.168.1.1",
+        "--force", home=home,
+    )
+    assert r.exit_code == 0, r.stdout
+
+    with connect(home / ".langusta" / "db.sqlite") as conn:
+        rows = assets_dal.list_all(conn)
+    assert len(rows) == 2
+    assert {r.hostname for r in rows} == {"router", "router-backup"}
+
+
 # ---------------------------------------------------------------------------
 # list
 # ---------------------------------------------------------------------------
