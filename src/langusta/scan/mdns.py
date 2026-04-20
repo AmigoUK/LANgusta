@@ -49,10 +49,20 @@ async def _real_browse(timeout: float) -> list[MdnsRecord]:
     from zeroconf.asyncio import AsyncServiceBrowser, AsyncServiceInfo, AsyncZeroconf
 
     found: dict[tuple[str, str], MdnsRecord] = {}
+    aiozc = AsyncZeroconf()
 
-    async def on_service_change(zc, service_type, name, state_change):
+    # zeroconf calls handlers with keyword arguments; the zeroconf-instance
+    # kwarg name shifted (old `zc=`, now `zeroconf=` in 0.148). Accept any
+    # kwargs and rely on the `aiozc` bound in closure rather than whatever
+    # the callback received, so we're compatible across the pinned range
+    # (>=0.130).
+    async def on_service_change(**kwargs: object) -> None:
+        service_type = kwargs.get("service_type")
+        name = kwargs.get("name")
+        if not isinstance(service_type, str) or not isinstance(name, str):
+            return
         info = AsyncServiceInfo(service_type, name)
-        await info.async_request(zc.zeroconf, 1000)
+        await info.async_request(aiozc.zeroconf, 1000)
         if not info.addresses:
             return
         for addr_bytes in info.addresses:
@@ -65,9 +75,10 @@ async def _real_browse(timeout: float) -> list[MdnsRecord]:
             server = info.server or name
             key = (ip, service_type)
             if key not in found:
-                found[key] = MdnsRecord(ip=ip, name=server.rstrip("."), service_type=service_type)
+                found[key] = MdnsRecord(
+                    ip=ip, name=server.rstrip("."), service_type=service_type,
+                )
 
-    aiozc = AsyncZeroconf()
     try:
         browser = AsyncServiceBrowser(
             aiozc.zeroconf,
