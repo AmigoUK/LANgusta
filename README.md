@@ -29,7 +29,7 @@ The distinctive feature is **institutional memory** — every asset carries its 
 ### Linux / macOS
 
 ```bash
-uv tool install langusta
+uv tool install git+https://github.com/AmigoUK/LANgusta.git
 langusta init            # create ~/.langusta/, prompt for a master password
 langusta add --hostname router --ip 192.168.1.1
 langusta scan 192.168.1.0/24
@@ -37,6 +37,8 @@ langusta ui              # Textual TUI
 ```
 
 Requires Python 3.12+. If you don't have `uv` yet: <https://docs.astral.sh/uv/getting-started/installation/>.
+
+> LANgusta is not yet published on PyPI — install from the GitHub repo as shown above. Pin a specific release with `@v0.2.1` on the end of the URL once releases are tagged.
 
 ### Windows
 
@@ -46,7 +48,7 @@ Requires Python 3.12+. If you don't have `uv` yet: <https://docs.astral.sh/uv/ge
 wsl --install Ubuntu-24.04
 # Then inside the WSL shell:
 curl -LsSf https://astral.sh/uv/install.sh | sh
-uv tool install langusta
+uv tool install git+https://github.com/AmigoUK/LANgusta.git
 langusta init
 ```
 

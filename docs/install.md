@@ -1,6 +1,6 @@
 # Installing LANgusta
 
-LANgusta ships as a Python package on PyPI, installed via [`uv`](https://docs.astral.sh/uv/) into an isolated tool environment.
+LANgusta is installed via [`uv`](https://docs.astral.sh/uv/) into an isolated tool environment. A PyPI release is planned; until then, install from the GitHub repository directly.
 
 ## Linux
 
@@ -14,9 +14,13 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 ### 2. Install LANgusta
 
 ```bash
-uv tool install langusta
-langusta --version        # should print 0.1.0rc1 or later
+uv tool install git+https://github.com/AmigoUK/LANgusta.git
+langusta --version        # should print 0.2.1 or later
 ```
+
+To pin a specific release once tags land, append `@v0.2.1` (or another tag) to
+the URL. To upgrade an already-installed tool, re-run the same command with
+`--force` or use `uv tool upgrade langusta`.
 
 ### 3. Enable unprivileged ICMP (required for `scan`)
 
@@ -47,7 +51,7 @@ Unprivileged ICMP is on by default on macOS. Install steps mirror Linux:
 # uv:
 curl -LsSf https://astral.sh/uv/install.sh | sh
 # then:
-uv tool install langusta
+uv tool install git+https://github.com/AmigoUK/LANgusta.git
 langusta init
 ```
 
@@ -59,7 +63,7 @@ Native Windows is not supported in v1. Use WSL2:
 wsl --install Ubuntu-24.04
 # Restart Windows; the WSL2 shell opens automatically on first launch. Then:
 curl -LsSf https://astral.sh/uv/install.sh | sh
-uv tool install langusta
+uv tool install git+https://github.com/AmigoUK/LANgusta.git
 langusta init
 ```
 
