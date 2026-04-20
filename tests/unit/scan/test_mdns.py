@@ -81,3 +81,71 @@ async def test_discover_browser_exception_returns_empty() -> None:
         raise OSError("mdns broken")
 
     assert await discover(browser_fn=raises, timeout=0.1) == {}
+
+
+@pytest.mark.asyncio
+async def test_real_browse_handler_accepts_zeroconf_0148_kwargs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression: zeroconf 0.148 renamed the handler's zeroconf kwarg from
+    `zc` to `zeroconf`, producing `TypeError: unexpected keyword argument
+    'zeroconf'` in real scans. Verify our handler accepts the new shape."""
+    from langusta.scan import mdns as mdns_mod
+
+    captured: dict[str, object] = {}
+
+    class _FakeAsyncZeroconf:
+        def __init__(self) -> None:
+            self.zeroconf = object()
+
+        async def async_close(self) -> None:
+            pass
+
+    class _FakeBrowser:
+        def __init__(self, zc: object, types: list[str], *, handlers: list) -> None:
+            captured["handlers"] = handlers
+
+        async def async_cancel(self) -> None:
+            pass
+
+    class _FakeInfo:
+        def __init__(self, service_type: str, name: str) -> None:
+            self.service_type = service_type
+            self.name = name
+            self.addresses: list[bytes] = []
+            self.server: str | None = None
+
+        async def async_request(self, zc: object, timeout: int) -> None:
+            # No addresses → handler returns cleanly; we just need to confirm
+            # it didn't raise TypeError before getting here.
+            captured["received_zc"] = zc
+            captured["async_request_called"] = True
+
+    monkeypatch.setattr(mdns_mod, "asyncio", __import__("asyncio"))
+    monkeypatch.setattr(
+        "zeroconf.asyncio.AsyncZeroconf", _FakeAsyncZeroconf,
+    )
+    monkeypatch.setattr(
+        "zeroconf.asyncio.AsyncServiceBrowser", _FakeBrowser,
+    )
+    monkeypatch.setattr(
+        "zeroconf.asyncio.AsyncServiceInfo", _FakeInfo,
+    )
+
+    async def _fast_sleep(timeout: float) -> None:
+        # Fire the captured handler with the 0.148 kwarg shape before returning.
+        [handler] = captured["handlers"]  # type: ignore[misc]
+        await handler(
+            zeroconf=object(),
+            service_type="_http._tcp.local.",
+            name="router._http._tcp.local.",
+            state_change="Added",
+        )
+
+    monkeypatch.setattr(mdns_mod.asyncio, "sleep", _fast_sleep)
+
+    # The function returns [] because the fake info has no addresses — but
+    # crucially it must not raise TypeError on the kwarg mismatch.
+    result = await mdns_mod._real_browse(timeout=0.01)
+    assert result == []
+    assert captured.get("async_request_called") is True
