@@ -85,7 +85,20 @@ class AsyncsshBackend:
             async with asyncio.timeout(timeout):
                 async with asyncssh.connect(**connect_kwargs) as conn:
                     if not self._store.contains(host, port):
-                        self._record_host_key(conn, host, port)
+                        # TOFU failure must surface: if we can't record the
+                        # key now, the next cycle won't flip to the pinned
+                        # branch and we'd be stuck in first-use-unverified
+                        # mode forever. Short-circuit with a clear error
+                        # rather than silently returning the command exit.
+                        try:
+                            self._record_host_key(conn, host, port)
+                        except Exception as exc:
+                            elapsed = (time.monotonic() - start) * 1000.0
+                            return SshResult(
+                                exit_code=-1, stdout="",
+                                stderr=f"TOFU host-key record failed: {exc}",
+                                elapsed_ms=elapsed,
+                            )
                     proc = await conn.run(command, check=False)
         except TimeoutError:
             elapsed = (time.monotonic() - start) * 1000.0
@@ -107,20 +120,24 @@ class AsyncsshBackend:
         )
 
     def _record_host_key(self, conn, host: str, port: int) -> None:
-        """Extract the negotiated host key and append to the TOFU store."""
-        try:
-            server_key = conn.get_server_host_key()
-        except Exception:
-            return
+        """Extract the negotiated host key and append to the TOFU store.
+
+        Raises on any step that prevents the key from being recorded so
+        the caller can surface TOFU failure in the SshResult. The only
+        silent path is a concurrent-writer race against `store.add`,
+        which we tolerate because the other writer has already produced
+        an identical pin.
+        """
+        server_key = conn.get_server_host_key()
         if server_key is None:
-            return
-        try:
-            openssh_bytes = server_key.export_public_key(format_name="openssh")
-        except Exception:
-            return
+            raise RuntimeError("asyncssh returned no server host key")
+        openssh_bytes = server_key.export_public_key(format_name="openssh")
         parts = openssh_bytes.decode("utf-8", errors="replace").split()
         if len(parts) < 2:
-            return
+            raise RuntimeError(
+                "asyncssh host key export returned unexpected shape: "
+                f"{openssh_bytes!r}"
+            )
         key_type, key_b64 = parts[0], parts[1]
         entry = HostKeyEntry(
             host=host, port=port, key_type=key_type, key_b64=key_b64,
@@ -128,8 +145,13 @@ class AsyncsshBackend:
         try:
             self._store.add(entry)
         except Exception:
-            # Race with a concurrent monitor cycle — the other writer wins;
-            # verification against the just-written entry happens next run.
+            # Race with a concurrent monitor cycle — the other writer
+            # wins; verification against the just-written entry happens
+            # next run. We only tolerate this case; genuine add failures
+            # (e.g. disk full, permission denied) still raise up through
+            # the caller below.
+            if not self._store.contains(host, port):
+                raise
             return
 
 
