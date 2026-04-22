@@ -8,120 +8,104 @@ Pre-1.0 versions may introduce breaking changes on any minor bump.
 
 ## [Unreleased]
 
-### Changed (low-sev structure)
+## [0.2.1rc1] — 2026-04-22
 
-- **`langusta.backup` module moved to `langusta.db.backup`**. File belongs with the rest of the DB-lifecycle code; `cli.py` and `scan/orchestrator.py` updated to the new import path. Test fixture moved from `tests/unit/` to `tests/unit/db/`. Wave-3 A-022.
-- **`scan/tcp` and `monitor/checks/tcp` share a single `open_tcp_connection` helper** in new `langusta.core.net`. Each module still re-exports `_open_connection` as a module attribute so existing tests' `monkeypatch.setattr("langusta.<path>.tcp._open_connection", fake)` keeps working. Wave-3 A-009.
-- **`DEFAULT_REGISTRY` in `monitor/runner` is now a `MappingProxyType`**, so a stray `DEFAULT_REGISTRY[...] = …` raises `TypeError` instead of silently mutating the shared registry every cycle reads. Test code keeps replacing the whole attribute via monkeypatch. Wave-3 C-012.
-- **`db.connection.connect(path, *, readonly=False)` opts into `PRAGMA query_only = 1`** and skips the commit-on-exit dance. Default behaviour unchanged; readonly callers opt in when they want the intent to be structural. Wave-3 C-022.
+Rolls up the Wave-3 multi-agent code-review response (72 findings addressed across correctness, security, architecture, and test-coverage lenses) plus the Lansweeper importer polish. No schema change; schema stays at v7.
 
-### Fixed (low-sev hygiene)
+### ⚠ Upgrade note — data recovery for anyone already on 0.2.0
 
-- **Monitor runner constructs SNMP / SSH backends lazily**, only when a `snmp_oid` or `ssh_command` check is due in the current cycle. A pure ICMP/TCP/HTTP fleet no longer pays the pysnmp / asyncssh import + socket setup cost every cycle. Wave-3 A-016.
-- **`scan.orchestrator` cancels the rdns/tcp/mdns enrichment tasks in a `finally`**, so a BaseException (Ctrl+C, cancelled-task) doesn't orphan them. Regular Exception paths were already safe via `asyncio.gather`. Wave-3 C-018.
-- **`_has_user_data` uses `EXISTS` instead of `COUNT(*)` and allowlists the table name** against a simple-identifier regex before interpolation — short-circuits on the first row and keeps a malformed `sqlite_master` row from smuggling injection through. Wave-3 C-021.
-- **`_unlock_vault` returns the Vault AFTER leaving `with connect()`** so the commit-on-exit dance doesn't race with the caller's own connection handling. Vault holds only the derived key, not the sqlite connection, so this is pure hygiene. Wave-3 C-019.
-- **`is_heartbeat_stale` moved from `db/monitoring` to `core/monitoring`** next to the other monitor-domain pure code. `mon_dal.is_heartbeat_stale` kept as a backward-compat re-export. Wave-3 A-006.
-- **`monitor start` closes its parent-side log fd** after Popen dups it into the child; previously the parent leaked one fd per invocation. Wave-3 M-004.
-- **`mdns_discover` logs the failure to stderr** when the browser function raises, instead of silently swallowing. Wave-3 C-020.
+Migration 007 shipped in 0.2.0 had a latent bug: the `monitoring_checks` table rebuild ran under SQLite's `foreign_keys=ON`, and SQLite's documented "implicit DELETE FROM on DROP TABLE" semantics cascaded through `check_results.check_id ON DELETE CASCADE` — **every row in `check_results` was silently deleted on the 0.1 → 0.2 upgrade path**. 0.2.1rc1 fixes the runner (see below), but cannot un-delete rows that have already been lost.
 
-### Changed (code hygiene)
+**If you upgraded to 0.2.0 and want your check-result history back**, the pre-migration backup that ADR-0005 mandates has what you need. It's at `~/.langusta/backups/db-pre-migration-*.sqlite` — pick the most recent file timestamped before your 0.2.0 upgrade and copy it into `~/.langusta/db.sqlite` before running 0.2.1rc1 for the first time. Fresh installs and users who never ran 0.2.0 are unaffected.
 
-- **Single canonical path helper for the always-on notifications log**: `paths.notifications_log_path()` replaces two `langusta_home() / "notifications.log"` literals. Wave-3 A-003.
-- **MAC normalisation routed through `core.models.normalize_mac`** instead of scattered `.lower()` calls across the DAL, writer, importers, and ARP enrichment. One owner = one place to evolve (e.g. if we ever strip separators). Wave-3 A-013.
-- **`langusta.platform.NotImplementedCapability` imported from the package root** rather than reaching into `langusta.platform.base` from `cli.py`. Wave-3 A-023.
-- **Top-of-module imports replace function-local re-imports in `cli.py` and `scan/orchestrator.py`** (`json`, `pathlib.Path`, `asyncio`). Wave-3 A-008 / A-020.
+### ⚠ Breaking behaviour
+
+These are intentional changes that will flip on at upgrade time for existing users. Check your setup matches the new defaults before deploying.
+
+- **`HttpCheck` now verifies TLS certificates by default.** Previously the `verify=False` kwarg was hardcoded, silently disabling certificate verification on every HTTPS probe. Any monitor check pointing at a self-signed or expired cert will flip to `fail` on the next cycle. Opt out per-call via `insecure_tls=True` kwarg to `HttpCheck.run`; storing the flag per-check (new column) is a follow-up migration. Closes Wave-3 finding M-001 (3-lens confirmed high).
+- **`monitor start` no longer passes `LANGUSTA_MASTER_PASSWORD` into the detached daemon.** `subprocess.Popen` now receives an explicit `env=` with the password key stripped — the previous behaviour left the secret in `/proc/<pid>/environ`. If you have `snmp_oid` or `ssh_command` checks whose credentials live in the vault, deploy the daemon via `langusta monitor install-service` (ADR-0002) instead; the service manager supplies the password through its own credential mechanism. Closes Wave-3 finding S-005.
+- **`import-netbox` refuses `next` URLs pointing at a different origin than the base URL.** Paginated responses used to follow `next` blindly, carrying the bearer token to whatever host NetBox (or a MITM) pointed at. Now raises `NetBoxNetworkError` on any scheme/host/port mismatch; the CLI surfaces that as a normal `error: network error: ...` exit 1. Closes Wave-3 finding S-007.
+- **`monitor enable` prints every validation error up front instead of failing one at a time.** Users who previously ran `--kind snmp_oid` without `--oid` and `--credential-label` got one error per retry; now they see both and exit 2 once. Closes Wave-3 finding A-017.
+- **`langusta_home()` rejects a non-absolute `LANGUSTA_HOME` env override** with a `ValueError`. Empty env var still falls back to `~/.langusta`. Closes Wave-3 finding S-013.
 
 ### Security
 
-- **`known_hosts` is chmod'd 0o600 on every write**, regardless of process umask. Wave-3 S-010; a daemon running with a loose inherited umask would otherwise create the TOFU store at 0o644 and let local attackers overwrite or pre-seed pins.
-- **`monitor stop` refuses to signal a PID whose `/proc/<pid>/cmdline` doesn't mention 'langusta'**. Wave-3 S-012 — guards against SIGTERM'ing an unrelated process after the daemon has crashed and its pid got reassigned. Falls back to trust on non-Linux hosts where /proc is unavailable.
-- **SNMPv3 credentials using MD5, DES, or 3DES emit a `WeakSnmpv3ProtocolWarning`** at `SnmpV3Auth` construction time. Wave-3 S-011. Operators still get to use those protocols (some legacy devices need them) but now learn they're cryptographically broken and should migrate to SHA / AES-128+.
-- **`LANGUSTA_HOME` must be an absolute path** or `langusta_home()` raises `ValueError`. Wave-3 S-013 — a relative override would resolve to the CWD and could land the DB tree in an unexpected directory. Empty env var still falls back to the default.
+- **Migration 007 cascade-delete fix** (see upgrade note above). The runner now disables FK enforcement around the pending-migration chain per SQLite's canonical "12-step schema surgery" recipe, runs `PRAGMA foreign_key_check` afterwards, and re-enables. Settles Wave-2 open uncertainty C-002.
+- **`langusta init` no longer leaves `~/.langusta` or `db.sqlite` world-readable mid-flight.** On a default-umask-022 host the tree was 0755/0644 during the window between DB creation and the final `enforce_private` — exposing the vault salt and verifier to any local user. `init()` now tightens umask to `0o077` across the whole setup block; the post-setup `enforce_private` calls remain as belt-and-braces for the re-init path. S-002.
+- **`import_from_dict` allowlists column names per table** via `PRAGMA table_info` before interpolating them into the INSERT SQL. A crafted dump previously leaked a sqlite3 `OperationalError` on injection attempts; now raises `ImportRefused` cleanly, and also catches benign schema-drift typos. S-001.
+- **`macOS` launchd plist routes daemon logs under `~/Library/Logs`** instead of `/tmp`. The previous `/tmp/langusta-monitor.{out,err}` path was world-readable (mode 1777) and symlink-attackable. S-003.
+- **`send_webhook` failure-path logs scheme://netloc only**, no URL path or query — Slack/Discord webhooks encode the auth token in the path, and the failure `print` to stderr was leaking it. S-014.
+- **`write_pid_file` refuses to follow symlinks** (swapped to `os.open` with `O_NOFOLLOW`), blocking a local attacker from using a planted symlink at `~/.langusta/monitor.pid` to redirect the write. S-006.
+- **`KnownHostsStore.add` chmods the file to 0o600 on every write**, so TOFU pins don't inherit a loose umask. S-010.
+- **`stop_via_pid_file` sniffs `/proc/<pid>/cmdline` for "langusta"** before signalling, guarding against SIGTERM'ing an unrelated process whose PID reused the slot after a daemon crash. S-012.
+- **`SnmpV3Auth` emits `WeakSnmpv3ProtocolWarning`** when constructed with MD5 auth or DES/3DES priv. The protocols remain usable for legacy gear, but operators see the crypto risk at credential-create time. S-011.
+- **`proposed_changes.accept` / `edit_override` allowlist field names** before interpolating them into the UPDATE SQL. Not reachable from any current writer, but closes the defence-in-depth gap against a future import or adversary that can append rows to `proposed_changes` directly. M-002.
 
-### Changed
+### Bug fixes
 
-- **`langusta monitor enable` now surfaces every validation error at once.** Previously the CLI stopped at the first error (missing `--oid`) and the user fixed it only to hit the next one (missing `--credential-label`). The new single-owner validator (`langusta.core.monitoring.validate_check_config`) returns a full list of field-interaction errors; the CLI prints them all and exits 2. The DAL keeps its own single-error guards as defence-in-depth for programmatic callers. Wave-3 finding A-017.
-- **`cli.py` uses a public `resolve_snmp_credential(conn, *, label, vault)` helper** instead of inlining credential lookup + kind validation + vault decode. New module `langusta.scan.snmp.credentials` also owns the new `SnmpCredentialError`. Wave-3 finding A-010; no user-visible behaviour change.
-- **`db/writer._build_scan_diff_body` is now a pure function** extracted out of `_apply_update`. Timeline body rendering (field diffs, MAC add, open ports) can be fuzz-tested without a DB; production flow is unchanged. Wave-3 finding A-011.
-- **`cli.py`'s `notify test` subcommand now calls a public `send_to_sink(sink, event)` helper** instead of reaching into the private `_SENDERS` dict in `langusta.monitor.notifications`. Behaviour is unchanged; paired lint at `tests/unit/test_boundary_lints.py` keeps the CLI from sliding back into the private import. Wave-3 finding A-004.
+- **Each migration is now atomic across DDL and bookkeeping.** Python sqlite3's LEGACY isolation level auto-commits before every DDL/PRAGMA, and `executescript` commits any pending transaction first — so a crash between `executescript(mig.sql)` and `INSERT INTO _migrations` left the DDL persisted without a bookkeeping row, wedging the next `migrate()` run on re-apply. Runner now hands transaction control to the app (`isolation_level = None`) during the pending chain, wraps each migration in explicit `BEGIN`/`COMMIT`/`ROLLBACK`, and splits SQL via `sqlite3.complete_statement`. C-001.
+- **Monitor runner keeps writing the heartbeat when a single check raises.** `asyncio.gather`'s default `return_exceptions=False` re-raised on the first task error, aborting the cycle before `set_heartbeat` — a single flaky `record_result` wedged the "is the daemon alive?" signal. Switched to `return_exceptions=True`. C-011.
+- **`HttpCheck` and `TcpCheck` now honour `check.timeout_seconds`.** The runner's `_resolve_config` only plumbed the value for `snmp_oid` and `ssh_command`; tcp and http silently used the backends' hardcoded 5 s default regardless of what the user configured. C-004.
+- **`AsyncsshBackend` surfaces TOFU-record failures** in `SshResult.stderr` with exit_code = -1. Previously `_record_host_key` swallowed every exception; a failure to persist the pin left the backend stuck in first-use-unverified mode forever, with the command appearing to succeed. The concurrent-writer race (another worker already persisted the pin) is still tolerated via an explicit post-hoc check. C-008.
+- **`dispatch()`'s always-on notifications log write surfaces failures to stderr.** Previously wrapped in `contextlib.suppress(OSError)` — EACCES, disk-full, and out-of-quota disappeared silently. C-010.
+- **`monitor daemon --foreground` refuses to clobber a live PID file.** A second invocation used to overwrite the recorded PID unconditionally, orphaning the original daemon in `monitor stop`. M-007.
+- **`migrate._write_backup` and `backup.write` close their SQLite connections** via `contextlib.closing`. `with sqlite3.connect(...) as c` only commits; without an explicit close each call leaked two fds. M-003 (+ knock-on fix to `backup.write` flagged by A-002 as duplicated logic).
+- **`_has_user_data` uses `EXISTS` + `SELECT 1 … LIMIT 1`** instead of `COUNT(*)` across every user table — short-circuits on first row and gates the table-name interpolation behind a simple-identifier regex. C-021.
+- **Scan-orchestrator enrichment tasks cancel cleanly on `BaseException`.** `asyncio.gather` already cancels siblings on a regular Exception; wrapping in try/finally + explicit cancel covers the Ctrl+C / CancelledError path too. C-018.
+- **`_bind_mac` surfaces MAC collisions as a `system` timeline entry** on both assets, instead of silently returning False. Catches the DAL-level race that the identity resolver's Ambiguous-path is supposed to handle but can miss under concurrent scans. C-015.
+- **`mdns_discover` logs browser-function exceptions to stderr** instead of swallowing. Operators couldn't previously tell mDNS enrichment was broken. C-020.
+- **`monitor start` closes its parent-side log fd** after Popen dups it into the child. Was one fd leaked per invocation. M-004.
+- **Migration runner's pre-migration backup is on by default.** `backups_dir` now defaults to `paths.backups_dir()` internally instead of silently skipping the ADR-0005 safety rail when the caller forgets the kwarg. A-019.
+- **`Lansweeper` / `NetBox` importers route IP collisions through the review queue** instead of silently skipping. See "Features / changed behaviour" below for the full polish-pass summary.
 
-### Added
+### Features / changed behaviour
 
-- **`langusta notify add-logfile --label X --path Y`** registers an explicit logfile sink. Previously `notif_dal.VALID_KINDS` included `"logfile"` but the CLI only had `add-webhook` / `add-smtp`; users had no way to configure the extra log destination. Wave-3 finding A-005. Paired sentinel at `tests/unit/db/test_notifications_dal.py` asserts every kind in VALID_KINDS has a matching `add-<kind>` command.
+- **`langusta notify add-logfile --label X --path Y`** registers a logfile sink. `VALID_KINDS` included `"logfile"` but there was no CLI to add one. A-005.
+- **Lansweeper importer polish** — the conservative "skip on collision" behaviour from 0.2.0rc2 is replaced with proper scanner-proposes-human-disposes semantics. MAC-matched rows merge through `core.provenance.merge_scan_result`; IP-only matches land in the `review_queue`; protected-field conflicts surface in `proposed_changes` instead of being silently dropped.
+  - **`import-lansweeper --dry-run`** — parse, validate, report counts; single outer `SAVEPOINT` rolled back before the connection commits.
+  - **`import-lansweeper --verbose`** — per-row errors with CSV line numbers. Each row is wrapped in `SAVEPOINT row_<n>` so a bad row rolls back independently.
+  - **Expanded column mapping** — `detected_os`, `location`, `owner`, `management_url` now map from `OperatingSystem` / `Location` / `Owner` / `URL` (plus synonyms).
+  - **Demo fixture** `tests/fixtures/lansweeper_demo.csv` — ~25 rows exercising BOM headers, unicode hostnames, embedded newlines, malformed IPs, intra-file MAC/IP collisions.
+  - **`ImportReport`** now reports `imported`, `updated`, `skipped`, `proposed_changes_created`, `review_queue_entries`, `row_errors`.
+  - **Every import row that touches an asset emits a `kind='import'` timeline entry** authored by `'importer'`.
+  - **New shared module `src/langusta/db/import_common.py`** (`ImportOutcome`, `RowError`, `apply_imported_observation`, `insert_imported_asset`) — the NetBox importer will wire through the same semantics in a follow-up.
 
-### Fixed
+### Internal
 
-- **`_bind_mac` surfaces MAC collisions on the timeline instead of silently returning.** When a scan-time race has a MAC already bound to a different asset, both assets' timelines now get a `system` entry naming the MAC and the other asset id; an operator reading the timeline (or an alerting grep) can spot the inconsistency. Wave-3 finding C-015.
-- **`import-netbox` refuses to follow cross-origin `next` URLs.** The paginated response's `next` field was followed blindly and carried the bearer token with it — a malicious or hijacked NetBox (or a MITM injecting the initial response) could point `next` at an attacker-controlled host and steal the token on the first hop. Importer now compares each `next` URL's origin (scheme + lowercase host + port) to the base URL and raises `NetBoxNetworkError` on mismatch. Wave-3 finding S-007; regression test at `tests/unit/db/test_import_netbox.py`.
-- **Monitor runner keeps writing the heartbeat when a single check raises.** `asyncio.gather(..., return_exceptions=False)` re-raised on the first task error and `run_once` aborted before `set_heartbeat` — a single flaky record-result call wedged the operator's "is the daemon alive?" signal until something else wrote it. Switched to `return_exceptions=True`; per-task failures are logged to stderr, counted as `fail` outcomes, and the heartbeat lands as usual. Wave-3 finding C-011; regression test at `tests/unit/monitor/test_runner_concurrency.py`.
-- **`dispatch()`'s always-on log-file write surfaces failures to stderr.** Previously wrapped in `contextlib.suppress(OSError)`, which meant EACCES / disk-full / out-of-quota disappeared silently and the operator never learned the trail was empty. Failures now print the path + the reason to stderr; the dispatcher still continues to the downstream sinks so one broken log doesn't block them. Wave-3 finding C-010.
-- **`monitor.checks` `http` and `tcp` honour `check.timeout_seconds`.** The runner's `_resolve_config` only copied `timeout_seconds` for `snmp_oid` / `ssh_command`; tcp and http dropped the configured value and stayed on the backends' hard-coded 5 s default. Wave-3 finding C-004; regression test at `tests/unit/monitor/test_runner.py`.
-- **SSH `AsyncsshBackend` surfaces TOFU-record failures instead of silently returning the command's own exit.** `_record_host_key` swallowed every exception; if `export_public_key` raised or the store write failed, the pin never landed and the backend silently stayed in first-use-unverified mode forever. Failures now propagate into `SshResult.stderr` with exit_code = -1 so `ssh_command`'s `CheckResult.detail` reflects the TOFU error. Concurrent-writer race (pin already present by another worker) is still tolerated. Wave-3 finding C-008.
-- **`write_pid_file` refuses to follow symlinks at the target path.** `Path.write_text` followed a planted symlink; a local attacker who could plant a link at `~/.langusta/monitor.pid` could redirect the write to any user-owned file and have `monitor start` silently clobber it with the daemon's PID. Swapped to `os.open` with `O_NOFOLLOW | O_CREAT | O_TRUNC`, mode `0o600`. Wave-3 finding S-006; regression test at `tests/unit/monitor/test_daemon_control.py`.
-- **`send_webhook` failure log redacts the URL path and query.** Slack/Discord-style webhooks carry the auth token in the URL path; the failure-path `print(url)` to stderr leaked the token into any log/journal that sees daemon stderr. Helper `_origin_of(url)` returns scheme://netloc only; the operator can still identify the failing sink by host. Wave-3 finding S-014; regression test at `tests/unit/monitor/test_notifications.py`.
-- **`monitor start` scrubs `LANGUSTA_MASTER_PASSWORD` from the daemon subprocess env.** The detached daemon previously inherited the caller's entire environment into `/proc/<pid>/environ` — visible to any local process that could stat that pid. `subprocess.Popen` now receives `env=` explicitly with the password key stripped. Vault-backed checks (snmp_oid, ssh_command) should be deployed via `langusta monitor install-service` (ADR-0002) where the service manager supplies credentials through its own mechanism. Wave-3 finding S-005; regression test at `tests/integration/test_cli_monitor.py`.
-- **`db/migrate.py`'s pre-migration backup is on by default.** `backups_dir` defaulted to `None`, which meant every new caller had to remember to pass `paths.backups_dir()` or silently skip the ADR-0005 safety rail. Now defaults to `paths.backups_dir()` internally; callers that want to suppress the backup pass an explicit no-op directory or run against a fresh DB. Wave-3 finding A-019; regression test at `tests/unit/db/test_migrate.py`.
-- **Each migration is now atomic across its DDL and its bookkeeping row.** Python's sqlite3 LEGACY isolation implicitly commits before every non-DML/non-query statement, and `executescript` commits any pending transaction first — so a crash between `executescript(mig.sql)` and `INSERT INTO _migrations` left the DDL persisted but the bookkeeping row absent, wedging `migrate()` on retry (`table X already exists`). The runner now hands transaction control to the application (`isolation_level = None`) during the pending-chain loop, wraps each migration in explicit `BEGIN` / `COMMIT` (ROLLBACK on error), and splits migration SQL via `sqlite3.complete_statement` so quote- and comment-aware boundaries are preserved. Wave-3 finding C-001; regression test at `tests/unit/db/test_migrate.py::test_migrate_is_atomic_when_interrupted_between_ddl_and_bookkeeping`.
-- **`backup now` snapshots are regression-tested as end-to-end restorable.** ADR-0005 names "restore-from-old-backup" as a CI contract, but nothing asserted it until now. `tests/integration/test_cli_backup_export.py::test_backup_snapshot_can_be_restored_into_a_fresh_home` runs the full lifecycle (init → seed → backup → mutate → copy snapshot into a fresh home → `list` shows pre-mutation state; vault rejects a wrong master password and accepts the original). Wave-3 finding T-025.
-- **`langusta init` no longer leaves `~/.langusta` / `db.sqlite` world-readable mid-flight.** On a default-umask-022 host the tree was 0755/0644 during the window between DB creation and the final `enforce_private` — exposing the vault salt and verifier to any local user. `init()` now tightens umask to `0o077` for the whole setup block; the post-setup `enforce_private` calls are kept as belt-and-braces for the re-init path. Wave-3 finding S-002; regression test at `tests/integration/test_init_command.py::test_init_never_leaves_db_world_readable_at_any_moment`.
-- **Dump-import column names are now allowlisted.** `import_from_dict` interpolated every row-dict key directly into `INSERT INTO <table> (<col_names>) VALUES (...)`. A crafted key could close the column list and chain SQL — today sqlite3's single-statement guard raises a syntax error, but that's not defence in depth and leaks an `OperationalError` instead of the `ImportRefused` the rest of the path uses. The importer now validates each row's keys against the target table's actual columns via `PRAGMA table_info`. Wave-3 finding S-001; also catches benign schema-drift typos. Regression tests at `tests/unit/test_export.py`.
-- **macOS launchd plist routes monitor-daemon logs under `~/Library/Logs` instead of `/tmp`.** `/tmp` on macOS is mode 1777 — any local user could tail the daemon's stdout/stderr or pre-create the target as a symlink attack. The plist template now writes to `~/Library/Logs/langusta-monitor.{out,err}.log` (per-user, user-owned). Wave-3 finding S-003; regression test at `tests/unit/platform/test_daemon_recipe.py::test_macos_plist_does_not_route_logs_through_tmp`.
-- **`monitor daemon --foreground` now refuses to clobber a live PID file.** A second invocation used to overwrite the recorded PID unconditionally, orphaning the original daemon (`monitor stop` would target the clobberer, not the actual running process). It now reads the existing PID file, exits with code 1 and a clear message when the recorded PID is alive, and only overwrites when the file is missing or stale. Wave-3 finding M-007. Combined regression coverage for `monitor start` / `monitor daemon` / the `finally: clear_pid_file` PID-file lifecycle at `tests/integration/test_cli_monitor.py` — closes the "no integration tests" half of findings M-006 and M-007.
-- **SSH TOFU end-to-end round-trip is now regression-tested.** The `AsyncsshBackend`'s first-use-records / subsequent-use-pins branch had no end-to-end test; a future "simplification" that passed `known_hosts=None` on the second use would silently re-disable verification. Wave-3 finding M-005; regression tests at `tests/unit/monitor/ssh/test_asyncssh_backend.py`.
-- **SQLite connections in `migrate._write_backup` and `backup.write` are now explicitly closed.** Both used `with sqlite3.connect(...) as c` which commits the connection on exit but does not close it — two file descriptors were leaked per call. Wrapped both with `contextlib.closing`. Wave-3 finding M-003 (with a knock-on fix to `backup.write` since A-002 flagged them as duplicated logic); regression test at `tests/unit/db/test_migrate.py::test_write_backup_closes_both_sqlite_connections`.
-- **`proposed_changes.accept` / `edit_override` refuse non-allowlisted field names.** Both paths interpolated `row.field` directly into an `UPDATE assets SET {field} = ?` statement. Today the insert-side DAL is the only writer and it only inserts SCANNABLE fields, so the gap is not reachable in production — but a future writer, import, or adversary who can append rows to `proposed_changes` would steer the UPDATE to an arbitrary asset column. The resolution helpers now validate against an explicit allowlist of user-editable asset columns before running the UPDATE. Wave-3 finding M-002. Regression tests at `tests/unit/db/test_proposed_changes.py`.
-- **HTTP monitor check verifies TLS certificates by default.** `HttpCheck` previously passed `verify=False` unconditionally, silently disabling certificate verification on every HTTPS probe — a LAN-local MITM risk flagged by three review lenses (Wave-3 finding M-001). `HttpCheck.run` now accepts an `insecure_tls=True` kwarg as an explicit opt-out for intentionally self-signed lab targets; persisting the flag per-check will land in a follow-up migration. Regression tests at `tests/unit/monitor/checks/test_http.py`.
-- **Migration runner no longer cascade-deletes FK-referenced child rows during rebuild-via-swap migrations.** SQLite performs an implicit `DELETE FROM` on `DROP TABLE` when `foreign_keys=ON`, which cascaded through `check_results.check_id ON DELETE CASCADE` in migration 007 and silently destroyed all historic check results on the 0.1 → 0.2 upgrade path. The runner now disables FK enforcement across the pending-migration chain (SQLite's canonical "12-step schema surgery" recipe), runs `PRAGMA foreign_key_check` afterwards to catch any genuine orphans a migration produced, and re-enables FKs. Settles Wave-2 post-review open uncertainty **C-002** against `src/langusta/db/migrate.py` and `migrations/007_monitor_snmp_ssh.sql`; regression test at `tests/unit/db/test_migrate.py::test_migrate_007_preserves_check_results_across_table_rebuild`. Users who already upgraded to 0.2.0 and lost `check_results` history should restore from their pre-migration backup at `~/.langusta/backups/db-pre-migration-*.sqlite`.
+Refactors with no user-facing behaviour change, listed for contributor context.
 
-## [0.2.1] — 2026-04-20
+- **`db/writer._build_scan_diff_body`** extracted as a pure function + property-tested. A-011.
+- **`core.monitoring.validate_check_config`** is the single owner for field-interaction validation (kind + comparator/expected + kind-specific requirements). A-017.
+- **`scan.snmp.credentials.resolve_snmp_credential`** replaces the inline credential-lookup block in `cli scan --snmp`. A-010.
+- **`langusta.backup` moved to `langusta.db.backup`** to sit next to the rest of the DB-lifecycle code. A-022.
+- **Shared `langusta.core.net.open_tcp_connection`** replaces the twin `_open_connection` helpers in `scan/tcp` and `monitor/checks/tcp`. A-009.
+- **`core.models.normalize_mac`** is the single point of MAC canonicalisation; the scattered `.lower()` calls across the DAL / writer / importers / ARP enrichment are gone. A-013.
+- **`core.monitoring.is_heartbeat_stale`** moved out of `db.monitoring` to sit beside the other pure monitor-domain code (with a back-compat re-export). A-006.
+- **`paths.notifications_log_path()`** is the single source of truth for the always-on log path; the two `langusta_home() / "notifications.log"` literals in `cli.py` are gone. A-003.
+- **Monitor runner builds SNMP / SSH backends lazily** — pure ICMP/TCP/HTTP cycles no longer pay the pysnmp / asyncssh import+setup cost. A-016.
+- **`monitor/runner.DEFAULT_REGISTRY`** is a `MappingProxyType`; stray `[...] = ...` mutation now raises `TypeError`. C-012.
+- **`db.connection.connect(path, *, readonly=False)`** opts into `PRAGMA query_only = 1` and skips the commit-on-exit dance. Default unchanged. C-022.
+- **`monitor.notifications.send_to_sink`** is the public helper `cli notify test` uses instead of reaching into private `_SENDERS`. A-004.
+- **Function-local `import asyncio / json / pathlib.Path` re-imports** in `cli.py` and `scan/orchestrator.py` promoted to top-of-module. A-008, A-020.
+- **`langusta.platform.NotImplementedCapability`** imported from the package root instead of `.base` in `cli.py`. A-023.
+- Miscellaneous: `_unlock_vault` returns the Vault outside the `with connect()` block (C-019); `known_hosts.py` + `migrate.py` gap documented via README and ADR comments (A-007, A-015, A-021); ADR-0002's historical `TimelineWriter` reference updated (A-015).
 
-Polish pass on the Lansweeper CSV importer. The conservative "skip on
-collision" behaviour shipped in rc1 is replaced with proper
-scanner-proposes-human-disposes semantics: MAC-matched rows merge through
-`core.provenance.merge_scan_result`, IP-only matches land in the
-`review_queue`, and protected-field conflicts surface in
-`proposed_changes` instead of being silently dropped.
+### Tests and coverage
 
-### Added
-
-- **`import-lansweeper --dry-run`** — parse, validate, and report counts
-  without persisting writes. Uses a single outer `SAVEPOINT` that is rolled
-  back before the connection commits.
-- **`import-lansweeper --verbose`** — print each per-row error with its CSV
-  line number. Each row is wrapped in its own `SAVEPOINT row_<n>` so a bad
-  row rolls back without affecting siblings.
-- **Expanded column mapping** — `detected_os`, `location`, `owner`,
-  `management_url` now map from Lansweeper's `OperatingSystem` / `Location`
-  / `Owner` / `URL` columns (plus synonyms).
-- **Demo fixture** `tests/fixtures/lansweeper_demo.csv` — ~25 rows covering
-  BOM headers, unicode hostnames, embedded newlines, malformed IPs, and
-  intra-file MAC / IP collisions.
-- New shared module `src/langusta/db/import_common.py` (`ImportOutcome`,
-  `RowError`, `apply_imported_observation`, `insert_imported_asset`) so the
-  NetBox importer can wire through the same semantics in a follow-up.
-
-### Changed
-
-- `ImportReport` now reports `imported`, `updated`, `skipped`,
-  `proposed_changes_created`, `review_queue_entries`, and `row_errors`.
-- IP validation via `ipaddress.ip_address` — invalid values become
-  `RowError` entries rather than raising.
-- Every import row that touches an asset emits a `kind='import'` timeline
-  entry authored by `'importer'`.
-
-### Tests
-
-554 tests passing (+18 net from 0.2.0). 28 unit tests in
-`tests/unit/db/test_import_lansweeper.py` and 5 integration tests in
-`tests/integration/test_cli_import_lansweeper.py`.
+- **676 tests passing** (up from 536 at 0.2.0 — +140 net, including +21 from 0.2.1rc1's Lansweeper polish and +119 from the Wave-3 response).
+- Every high/medium Wave-3 finding has a regression test; low-severity refactors rely on existing integration coverage.
+- New property suites: `test_backup_dedupe.py`, `test_migration_checksum.py`, `test_export_roundtrip.py`, `test_writer_idempotency.py`, `test_runner_invariants.py`, `test_build_scan_diff_body.py`.
+- New snapshot coverage: `test_timeline_widget.py` (mixed-kind + empty), frozen-fresh and stale heartbeat baselines, 12-asset inventory baseline.
+- `ruff check src tests scripts` and `scripts.lint_boundaries` both clean.
 
 ### Deferred
 
-- Migration 008 for `serial_number` / `asset_tag` columns.
-- NetBox importer parity — wire `import_netbox.py` through
-  `apply_imported_observation`.
-- Streaming / progress for >10K-row files.
+- Per-check persistence of `HttpCheck` `insecure_tls` flag — plumbing is in, schema column is a follow-up migration.
+- NetBox importer wire-through to `apply_imported_observation` (Lansweeper-parity).
+- `Migration 008` for `serial_number` / `asset_tag` columns.
+- Streaming / progress reporting for import of >10K-row files.
+- True TOCTOU guard on `monitor start` (read-then-spawn-then-write is not atomic). Tests cover the single-invocation failure modes only; atomicity is a separate concurrency-safety PR.
+- True crash-safety proof for `migrate()` (kill -9, OOM) via a fsck-style tool comparing `_migrations` / `user_version` / live schema.
 
 ## [0.2.0] — 2026-04-19
 
