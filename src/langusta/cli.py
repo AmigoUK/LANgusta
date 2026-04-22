@@ -1044,6 +1044,29 @@ def notify_add_webhook(
     typer.echo(f"added webhook sink id={sid} label={label}")
 
 
+@notify_app.command("add-logfile")
+def notify_add_logfile(
+    label: str = typer.Option(..., "--label", help="Unique name for this sink."),
+    path: str = typer.Option(..., "--path", help="Absolute path to append JSON events to."),
+) -> None:
+    """Register a logfile sink. Each monitor event is appended as one
+    JSON line to `path`. Distinct from the always-on
+    `~/.langusta/notifications.log` — users add this sink when they want
+    an additional, explicitly-configured destination (e.g. under a
+    log-rotation directory)."""
+    now = datetime.now(UTC)
+    with connect(paths.db_path()) as conn:
+        try:
+            sid = notif_dal.create(
+                conn, label=label, kind="logfile",
+                config={"path": path}, now=now,
+            )
+        except notif_dal.DuplicateLabel as exc:
+            typer.echo(f"error: {exc}", err=True)
+            raise typer.Exit(code=1) from exc
+    typer.echo(f"added logfile sink id={sid} label={label}")
+
+
 @notify_app.command("add-smtp")
 def notify_add_smtp(
     label: str = typer.Option(..., "--label", help="Unique name for this sink."),
@@ -1112,10 +1135,7 @@ def notify_test(
     sink_id: int = typer.Argument(..., help="Sink id to fire a test event at."),
 ) -> None:
     """Fire a synthetic failure+recovery event at one sink."""
-    from langusta.monitor.notifications import (
-        _SENDERS,
-        MonitorEvent,
-    )
+    from langusta.monitor.notifications import MonitorEvent, send_to_sink
 
     with connect(paths.db_path()) as conn:
         rows = [s for s in notif_dal.list_all(conn) if s.id == sink_id]
@@ -1123,16 +1143,16 @@ def notify_test(
         typer.echo(f"error: no sink with id={sink_id}", err=True)
         raise typer.Exit(code=1)
     sink = rows[0]
-    sender = _SENDERS.get(sink.kind)
-    if sender is None:
-        typer.echo(f"error: no sender for kind={sink.kind}", err=True)
-        raise typer.Exit(code=1)
     event = MonitorEvent(
         asset_id=0, asset_hostname="langusta-test", asset_ip="127.0.0.1",
         kind="failure", check_kind="test", detail="synthetic test event",
         occurred_at=datetime.now(UTC),
     )
-    ok = asyncio.run(sender(sink.config, event))
+    try:
+        ok = asyncio.run(send_to_sink(sink, event))
+    except ValueError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
     typer.echo(f"sink {sink.label!r}: {'ok' if ok else 'FAILED'}")
     if not ok:
         raise typer.Exit(code=1)

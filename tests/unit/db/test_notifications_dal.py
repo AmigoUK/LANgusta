@@ -113,3 +113,23 @@ def test_get_by_label(db: Path) -> None:
 def test_get_by_label_missing_returns_none(db: Path) -> None:
     with connect(db) as conn:
         assert notif_dal.get_by_label(conn, "nope") is None
+
+
+# ---------------------------------------------------------------------------
+# Wave-3 TEST-A-005 — every VALID_KIND has a CLI subcommand
+# ---------------------------------------------------------------------------
+
+
+def test_every_valid_sink_kind_has_a_notify_add_cli_command() -> None:
+    """`notif_dal.VALID_KINDS` is the DAL's set of allowed sink kinds;
+    every entry must have a matching `notify add-<kind>` CLI command,
+    or users can't actually add that kind. Wave-3 finding A-005
+    (single-lens architecture, medium)."""
+    from langusta.cli import notify_app
+
+    registered = {cmd.name for cmd in notify_app.registered_commands}
+    missing = {f"add-{k}" for k in notif_dal.VALID_KINDS} - registered
+    assert not missing, (
+        f"VALID_KINDS contains {missing} with no notify add-<kind> CLI "
+        "surface; either wire the command or drop the kind from VALID_KINDS"
+    )

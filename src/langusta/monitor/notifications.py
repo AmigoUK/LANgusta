@@ -192,6 +192,16 @@ _SENDERS = {
 }
 
 
+async def send_to_sink(sink: NotificationSink, event: MonitorEvent) -> bool:
+    """Public single-sink sender for `notify test`. Returns True on
+    success, False on send failure, or raises ValueError for an unknown
+    sink kind. Keeps cli.py out of the private `_SENDERS` registry."""
+    sender = _SENDERS.get(sink.kind)
+    if sender is None:
+        raise ValueError(f"no sender for sink kind {sink.kind!r}")
+    return bool(await sender(sink.config, event))
+
+
 async def dispatch(
     event: MonitorEvent,
     *,
