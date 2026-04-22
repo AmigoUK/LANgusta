@@ -265,21 +265,39 @@ def migrate(
         # `foreign_key_check` after the chain catches any genuine orphans the
         # migrations themselves produced.
         conn.execute("PRAGMA foreign_keys = OFF")
+        # Hand transaction control to us so DDL doesn't implicit-commit under
+        # our feet. Python's LEGACY isolation inserts an implicit COMMIT
+        # before every non-DML non-query statement (CREATE, DROP, PRAGMA);
+        # that would commit half a migration if the process died between
+        # the DDL and the INSERT INTO _migrations bookkeeping row. With
+        # isolation_level=None we wrap each migration in an explicit
+        # BEGIN/COMMIT so DDL + bookkeeping + user_version advance together
+        # or not at all.
+        saved_isolation = conn.isolation_level
+        conn.isolation_level = None
         try:
             for mig in pending:
-                conn.executescript(mig.sql)
-                conn.execute(
-                    "INSERT INTO _migrations (id, description, checksum, applied_at) "
-                    "VALUES (?, ?, ?, ?)",
-                    (
-                        mig.id,
-                        mig.description,
-                        mig.checksum,
-                        datetime.now(UTC).isoformat(timespec="seconds"),
-                    ),
-                )
-                # Advance user_version atomically with the migration.
-                conn.execute(f"PRAGMA user_version = {mig.id}")
+                conn.execute("BEGIN")
+                try:
+                    for stmt in _split_statements(mig.sql):
+                        conn.execute(stmt)
+                    conn.execute(
+                        "INSERT INTO _migrations "
+                        "(id, description, checksum, applied_at) "
+                        "VALUES (?, ?, ?, ?)",
+                        (
+                            mig.id,
+                            mig.description,
+                            mig.checksum,
+                            datetime.now(UTC).isoformat(timespec="seconds"),
+                        ),
+                    )
+                    # Advance user_version atomically with the migration.
+                    conn.execute(f"PRAGMA user_version = {mig.id}")
+                    conn.execute("COMMIT")
+                except BaseException:
+                    conn.execute("ROLLBACK")
+                    raise
             violations = conn.execute("PRAGMA foreign_key_check").fetchall()
             if violations:
                 raise RuntimeError(
@@ -287,4 +305,25 @@ def migrate(
                     f"{[tuple(v) for v in violations]}"
                 )
         finally:
+            conn.isolation_level = saved_isolation
             conn.execute("PRAGMA foreign_keys = ON")
+
+
+def _split_statements(script: str) -> list[str]:
+    """Split a multi-statement SQL script into individual statements.
+    Uses `sqlite3.complete_statement` so quoted strings and `--` comments
+    are respected — unlike a naive split on `;`.
+    """
+    statements: list[str] = []
+    buf = ""
+    for line in script.splitlines(keepends=True):
+        buf += line
+        if sqlite3.complete_statement(buf):
+            stripped = buf.strip()
+            if stripped:
+                statements.append(stripped)
+            buf = ""
+    tail = buf.strip()
+    if tail:
+        statements.append(tail)
+    return statements

@@ -142,8 +142,13 @@ def import_from_dict(conn: sqlite3.Connection, dump: dict) -> None:
         rows = tables[table_name]
         if not rows:
             continue
-        for row in rows:
-            row = _deserialise_row(row)
+        # Defence-in-depth: the column names from the dump are interpolated
+        # into the INSERT SQL, so we must validate each against the target
+        # table's actual columns before running. Rejects both SQL-injecting
+        # keys and benign typos / schema drift.
+        allowed_cols = _table_columns(conn, table_name)
+        for raw_row in rows:
+            row = _deserialise_row(raw_row)
             if table_name == "meta":
                 # Upsert — don't overwrite the target's own salt/verifier.
                 conn.execute(
@@ -151,11 +156,25 @@ def import_from_dict(conn: sqlite3.Connection, dump: dict) -> None:
                     "ON CONFLICT(key) DO NOTHING",
                     (row["key"], row["value"], row["set_at"]),
                 )
-            else:
-                cols = list(row.keys())
-                placeholders = ", ".join("?" for _ in cols)
-                col_names = ", ".join(cols)
-                conn.execute(
-                    f"INSERT INTO {table_name} ({col_names}) VALUES ({placeholders})",
-                    tuple(row[c] for c in cols),
+                continue
+            cols = list(row.keys())
+            bad = [c for c in cols if c not in allowed_cols]
+            if bad:
+                raise ImportRefused(
+                    f"dump row for table {table_name!r} contains "
+                    f"unknown column name(s) {bad!r}; expected any of "
+                    f"{sorted(allowed_cols)}"
                 )
+            placeholders = ", ".join("?" for _ in cols)
+            col_names = ", ".join(cols)
+            conn.execute(
+                f"INSERT INTO {table_name} ({col_names}) VALUES ({placeholders})",
+                tuple(row[c] for c in cols),
+            )
+
+
+def _table_columns(conn: sqlite3.Connection, table: str) -> frozenset[str]:
+    """Return the set of column names for `table`. `table` must already be
+    a trusted name (one of `_USER_TABLES`)."""
+    rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+    return frozenset(str(r["name"]) for r in rows)

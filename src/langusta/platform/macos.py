@@ -56,7 +56,17 @@ class MacOSBackend:
         home = Path(os.path.expanduser("~"))
         label = "uk.attv.langusta.monitor"
         install_path = home / "Library" / "LaunchAgents" / f"{label}.plist"
-        content = _LAUNCHD_PLIST_TEMPLATE.format(label=label, exec_path=exec_path)
+        # Logs under ~/Library/Logs (per-user, user-owned). /tmp is world-
+        # readable + world-writable on macOS and invites tail-everything
+        # eavesdropping plus symlink-attack at pre-create.
+        stdout_log = home / "Library" / "Logs" / "langusta-monitor.out.log"
+        stderr_log = home / "Library" / "Logs" / "langusta-monitor.err.log"
+        content = _LAUNCHD_PLIST_TEMPLATE.format(
+            label=label,
+            exec_path=exec_path,
+            stdout_path=stdout_log,
+            stderr_path=stderr_log,
+        )
         start_hint = f"launchctl load {install_path}"
         return InstallRecipe(
             manager="launchd",
@@ -85,9 +95,9 @@ _LAUNCHD_PLIST_TEMPLATE = """\
     <key>KeepAlive</key>
     <true/>
     <key>StandardOutPath</key>
-    <string>/tmp/langusta-monitor.out</string>
+    <string>{stdout_path}</string>
     <key>StandardErrorPath</key>
-    <string>/tmp/langusta-monitor.err</string>
+    <string>{stderr_path}</string>
 </dict>
 </plist>
 """

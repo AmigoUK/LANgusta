@@ -91,22 +91,31 @@ def init() -> None:
     backups = paths.backups_dir()
     db = paths.db_path()
 
-    home.mkdir(parents=True, exist_ok=True)
-    backups.mkdir(parents=True, exist_ok=True)
+    # Tighten umask up-front so every file/dir created below is user-only
+    # from the moment it exists. The post-init enforce_private calls are
+    # belt-and-braces for the idempotent re-init path when the tree
+    # already exists with looser perms.
+    previous_umask = os.umask(0o077)
+    try:
+        home.mkdir(parents=True, exist_ok=True)
+        backups.mkdir(parents=True, exist_ok=True)
 
-    migrate(db, backups_dir=backups)
+        migrate(db, backups_dir=backups)
 
-    # Set up the master password on first init.
-    with connect(db) as conn:
-        if not mp.is_set(conn):
-            password = _get_master_password()
-            try:
-                mp.setup(conn, password=password, now=datetime.now(UTC))
-            except ValueError as exc:
-                typer.echo(f"error: {exc}", err=True)
-                raise typer.Exit(code=1) from exc
+        # Set up the master password on first init.
+        with connect(db) as conn:
+            if not mp.is_set(conn):
+                password = _get_master_password()
+                try:
+                    mp.setup(conn, password=password, now=datetime.now(UTC))
+                except ValueError as exc:
+                    typer.echo(f"error: {exc}", err=True)
+                    raise typer.Exit(code=1) from exc
+    finally:
+        os.umask(previous_umask)
 
-    # Lock down permissions *after* the file exists.
+    # Enforce private modes on any pre-existing tree that predates the
+    # tightened umask above (idempotent re-init).
     backend.enforce_private(home)
     backend.enforce_private(backups)
     backend.enforce_private(db)
