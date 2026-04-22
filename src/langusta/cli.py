@@ -141,11 +141,18 @@ def add(
     owner: str | None = typer.Option(None, "--owner", help="Responsible party."),
     management_url: str | None = typer.Option(None, "--url", help="Management URL or SSH target."),
     criticality: str | None = typer.Option(None, "--criticality", help="Criticality level."),
+    force: bool = typer.Option(
+        False, "--force", "-f",
+        help="Insert even when --ip or --hostname already exists on another asset.",
+    ),
 ) -> None:
     """Add an asset manually. At least one of --hostname/--ip/--mac is required.
 
     Every field you pass is recorded with `manual` provenance — future scans
     will propose changes rather than silently overwrite.
+
+    Refuses to create a second asset at an IP or hostname that's already
+    bound to an existing asset — pass `--force` to override.
     """
     if not any((hostname, ip, mac)):
         typer.echo(
@@ -156,6 +163,23 @@ def add(
 
     now = datetime.now(UTC)
     with connect(paths.db_path()) as conn:
+        if not force:
+            existing = assets_dal.find_by_identity(
+                conn, hostname=hostname, primary_ip=ip,
+            )
+            if existing is not None:
+                matched: list[str] = []
+                if ip and existing.primary_ip == ip:
+                    matched.append(f"ip={ip}")
+                if hostname and existing.hostname == hostname:
+                    matched.append(f"hostname={hostname!r}")
+                reason = ", ".join(matched) or "identity"
+                typer.echo(
+                    f"error: asset id={existing.id} already has {reason}. "
+                    f"Use --force to insert anyway, or `langusta list` to inspect.",
+                    err=True,
+                )
+                raise typer.Exit(code=1)
         try:
             asset_id = assets_dal.insert_manual(
                 conn,

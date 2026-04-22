@@ -187,6 +187,37 @@ def list_all(conn: sqlite3.Connection) -> list[Asset]:
     return [_row_to_asset(r, by_asset.get(int(r["id"]), [])) for r in asset_rows]
 
 
+def find_by_identity(
+    conn: sqlite3.Connection,
+    *,
+    hostname: str | None = None,
+    primary_ip: str | None = None,
+) -> Asset | None:
+    """Return the lowest-id asset whose hostname OR primary_ip matches.
+
+    Used by `langusta add` to refuse duplicates. Returns None if neither
+    argument is given or no asset matches.
+    """
+    if not hostname and not primary_ip:
+        return None
+    clauses: list[str] = []
+    params: list[str] = []
+    if primary_ip:
+        clauses.append("primary_ip = ?")
+        params.append(primary_ip)
+    if hostname:
+        clauses.append("hostname = ?")
+        params.append(hostname)
+    where = " OR ".join(clauses)
+    row = conn.execute(
+        f"SELECT id FROM assets WHERE {where} ORDER BY id LIMIT 1",
+        params,
+    ).fetchone()
+    if row is None:
+        return None
+    return get_by_id(conn, int(row["id"]))
+
+
 def get_by_id(conn: sqlite3.Connection, asset_id: int) -> Asset | None:
     row = conn.execute(
         "SELECT id, hostname, primary_ip, vendor, detected_os, device_type, "
