@@ -1,4 +1,4 @@
-"""Monitor-check config validation, stdlib-only.
+"""Monitor-check config validation + heartbeat freshness, stdlib-only.
 
 The CLI's `monitor enable` and any future programmatic config surface
 share these kind/field-interaction rules from here. DAL-level guards
@@ -6,9 +6,16 @@ in `db.monitoring.enable_check` remain a last-line-of-defence for
 contract violations; this module is the single place that enumerates
 ALL validation errors up front so a user-facing prompt can surface
 them together instead of failing one at a time. Wave-3 TEST-A-017.
+
+Also hosts `is_heartbeat_stale`, a pure function that was previously
+misfiled in `db/monitoring.py` beside the SQL helpers (Wave-3 A-006);
+the logic doesn't touch the DB and belongs next to the rest of the
+monitor-domain pure code.
 """
 
 from __future__ import annotations
+
+from datetime import datetime, timedelta
 
 VALID_CHECK_KINDS: frozenset[str] = frozenset({
     "icmp", "tcp", "http", "snmp_oid", "ssh_command",
@@ -67,3 +74,18 @@ def validate_check_config(
         if not username:
             errors.append("ssh_command checks require --user")
     return errors
+
+
+def is_heartbeat_stale(
+    heartbeat: datetime | None,
+    *,
+    now: datetime,
+    tolerance_seconds: int,
+) -> bool:
+    """Return True when the monitor daemon's last heartbeat is too
+    old — either never recorded (`heartbeat is None`) or older than
+    `tolerance_seconds`. Pure function; takes its inputs explicitly
+    so tests don't need a DB fixture."""
+    if heartbeat is None:
+        return True
+    return (now - heartbeat) > timedelta(seconds=tolerance_seconds)

@@ -156,12 +156,19 @@ def _applied_migrations(conn: sqlite3.Connection) -> dict[int, str]:
 # ---------------------------------------------------------------------------
 
 
+_SAFE_TABLE_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
 def _has_user_data(conn: sqlite3.Connection) -> bool:
     """Is there anything worth backing up before DDL?
 
     A fresh install has no tables yet (or only empty foundation tables) — no
     point in littering ~/.langusta/backups/ with empty files. Heuristic: if
     any user-facing table exists AND has rows, back up.
+
+    Table names from `sqlite_master` are interpolated into the EXISTS
+    probe; the regex filter rejects anything that isn't a simple
+    identifier so a hostile dump couldn't smuggle an injection through.
     """
     tables = [
         row["name"]
@@ -171,8 +178,14 @@ def _has_user_data(conn: sqlite3.Connection) -> bool:
         ).fetchall()
     ]
     for table in tables:
-        count = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
-        if count > 0:
+        if not _SAFE_TABLE_NAME.match(table):
+            continue
+        # EXISTS short-circuits on the first row so it's cheaper than a
+        # full COUNT on large tables (Wave-3 C-021).
+        row = conn.execute(
+            f"SELECT 1 FROM {table} LIMIT 1"
+        ).fetchone()
+        if row is not None:
             return True
     return False
 

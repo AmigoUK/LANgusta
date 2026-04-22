@@ -40,15 +40,20 @@ def _get_master_password() -> str:
 
 def _unlock_vault() -> Vault:
     password = _get_master_password()
+    # Vault holds only the derived key, not the sqlite connection, so
+    # we can safely exit the `with connect()` block before returning —
+    # keeps the commit-on-exit dance from racing with the caller's
+    # own connection handling. Wave-3 C-019.
     with connect(paths.db_path()) as conn:
         try:
-            return mp.unlock(conn, password=password)
+            vault = mp.unlock(conn, password=password)
         except mp.WrongMasterPassword as exc:
             typer.echo(f"error: {exc}", err=True)
             raise typer.Exit(code=1) from exc
         except RuntimeError as exc:
             typer.echo(f"error: {exc}", err=True)
             raise typer.Exit(code=1) from exc
+    return vault
 
 app = typer.Typer(
     name="langusta",
