@@ -1,6 +1,6 @@
 [project]
 name = "langusta"
-version = "0.2.0"
+version = "0.2.1rc1"
 description = "Local-first TUI asset registry + network scanner + lightweight monitoring for small networks (<=250 devices)."
 readme = "README.md"
 license = { text = "AGPL-3.0-or-later" }
