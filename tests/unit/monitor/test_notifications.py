@@ -245,3 +245,46 @@ async def test_dispatch_skips_disabled_sinks(
     ]
     await dispatch(_event(), sinks=sinks, logfile_path=tmp_path / "log")
     assert hits == []
+
+
+# ---------------------------------------------------------------------------
+# Wave-3 TEST-S-014 — webhook failure logs must not echo URL path/token
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_send_webhook_failure_log_does_not_echo_token(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    """On webhook delivery failure `send_webhook` writes to stderr. The
+    URL is typically the only identifying info, but Slack/Discord-style
+    webhooks encode the auth token right in the path. Logging the full
+    URL on failure leaks that token to anyone who sees the daemon's
+    stderr (log file, systemd journal, service manager). The sink must
+    log an origin-only form."""
+
+    async def boom(url: str, payload: object, *, timeout: float) -> int:
+        raise RuntimeError("connection refused")
+
+    monkeypatch.setattr(
+        "langusta.monitor.notifications._http_post", boom,
+    )
+
+    webhook_url = (
+        "https://hooks.slack.com/services/T01234/B56789/SUPER_SECRET_TOKEN"
+    )
+    ok = await send_webhook({"url": webhook_url}, _event())
+    assert ok is False
+
+    err = capsys.readouterr().err
+    assert "SUPER_SECRET_TOKEN" not in err, (
+        f"webhook failure log leaked the token: {err!r}"
+    )
+    assert "/services/T01234" not in err, (
+        f"webhook failure log leaked the path segments: {err!r}"
+    )
+    # The host is fine to log — it's how the operator identifies which
+    # sink failed without needing the secret suffix.
+    assert "hooks.slack.com" in err, (
+        f"failure log should still name the host: {err!r}"
+    )
