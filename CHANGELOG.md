@@ -8,8 +8,17 @@ Pre-1.0 versions may introduce breaking changes on any minor bump.
 
 ## [Unreleased]
 
+### Changed
+
+- **`cli.py`'s `notify test` subcommand now calls a public `send_to_sink(sink, event)` helper** instead of reaching into the private `_SENDERS` dict in `langusta.monitor.notifications`. Behaviour is unchanged; paired lint at `tests/unit/test_boundary_lints.py` keeps the CLI from sliding back into the private import. Wave-3 finding A-004.
+
+### Added
+
+- **`langusta notify add-logfile --label X --path Y`** registers an explicit logfile sink. Previously `notif_dal.VALID_KINDS` included `"logfile"` but the CLI only had `add-webhook` / `add-smtp`; users had no way to configure the extra log destination. Wave-3 finding A-005. Paired sentinel at `tests/unit/db/test_notifications_dal.py` asserts every kind in VALID_KINDS has a matching `add-<kind>` command.
+
 ### Fixed
 
+- **`_bind_mac` surfaces MAC collisions on the timeline instead of silently returning.** When a scan-time race has a MAC already bound to a different asset, both assets' timelines now get a `system` entry naming the MAC and the other asset id; an operator reading the timeline (or an alerting grep) can spot the inconsistency. Wave-3 finding C-015.
 - **`import-netbox` refuses to follow cross-origin `next` URLs.** The paginated response's `next` field was followed blindly and carried the bearer token with it — a malicious or hijacked NetBox (or a MITM injecting the initial response) could point `next` at an attacker-controlled host and steal the token on the first hop. Importer now compares each `next` URL's origin (scheme + lowercase host + port) to the base URL and raises `NetBoxNetworkError` on mismatch. Wave-3 finding S-007; regression test at `tests/unit/db/test_import_netbox.py`.
 - **Monitor runner keeps writing the heartbeat when a single check raises.** `asyncio.gather(..., return_exceptions=False)` re-raised on the first task error and `run_once` aborted before `set_heartbeat` — a single flaky record-result call wedged the operator's "is the daemon alive?" signal until something else wrote it. Switched to `return_exceptions=True`; per-task failures are logged to stderr, counted as `fail` outcomes, and the heartbeat lands as usual. Wave-3 finding C-011; regression test at `tests/unit/monitor/test_runner_concurrency.py`.
 - **`dispatch()`'s always-on log-file write surfaces failures to stderr.** Previously wrapped in `contextlib.suppress(OSError)`, which meant EACCES / disk-full / out-of-quota disappeared silently and the operator never learned the trail was empty. Failures now print the path + the reason to stderr; the dispatcher still continues to the downstream sinks so one broken log doesn't block them. Wave-3 finding C-010.
