@@ -193,3 +193,72 @@ async def test_scan_writes_a_post_scan_backup(tmp_path: Path) -> None:
     with sqlite3.connect(str(snapshots[0])) as b:
         rows = b.execute("SELECT hostname FROM assets").fetchall()
     assert rows
+
+
+# ---------------------------------------------------------------------------
+# Wave-3 TEST-T-025 — backup roundtrip restores prior state
+# ---------------------------------------------------------------------------
+
+
+def test_backup_snapshot_can_be_restored_into_a_fresh_home(tmp_path: Path) -> None:
+    """End-to-end ADR-0005 contract: a backup taken at time T must, when
+    copied into an empty home, replay the exact pre-T state — and the
+    vault must still require the original master password."""
+    import shutil
+
+    home1 = tmp_path / "h1"
+    home1.mkdir()
+    runner.invoke(app, ["init"], env=_env(home1))
+    runner.invoke(
+        app, ["add", "--hostname", "a", "--ip", "10.0.0.1"], env=_env(home1),
+    )
+    runner.invoke(
+        app, ["add", "--hostname", "b", "--ip", "10.0.0.2"], env=_env(home1),
+    )
+
+    r_backup = runner.invoke(app, ["backup", "now"], env=_env(home1))
+    assert r_backup.exit_code == 0, r_backup.stdout
+
+    # Mutate home1 after the backup — c is in home1 but not in the snapshot.
+    runner.invoke(
+        app, ["add", "--hostname", "c", "--ip", "10.0.0.3"], env=_env(home1),
+    )
+
+    # Restore the snapshot into a fresh home — just copy it into the DB slot.
+    backup_dir = home1 / ".langusta" / "backups"
+    snapshots = sorted(backup_dir.glob("db-*.sqlite"))
+    assert snapshots, "backup now should have produced a snapshot"
+    snapshot = snapshots[-1]
+
+    home2 = tmp_path / "h2"
+    (home2 / ".langusta").mkdir(parents=True)
+    shutil.copy(snapshot, home2 / ".langusta" / "db.sqlite")
+
+    # Home 2 sees the pre-mutation state: a and b, but not c.
+    r_list = runner.invoke(app, ["list"], env=_env(home2))
+    assert r_list.exit_code == 0, r_list.stdout
+    assert "10.0.0.1" in r_list.stdout
+    assert "10.0.0.2" in r_list.stdout
+    assert "10.0.0.3" not in r_list.stdout, (
+        "backup snapshot restored post-mutation state — `backup now` was "
+        "not in fact a point-in-time capture"
+    )
+
+    # The vault still requires the correct master password. Any path that
+    # unlocks the vault is fine; `scan --snmp` reads creds, but a pure-list
+    # command doesn't. We assert via `cred list` if it exists, otherwise by
+    # probing the vault directly through the DAL.
+    from langusta.crypto import master_password as mp
+
+    with connect(home2 / ".langusta" / "db.sqlite") as conn:
+        assert mp.is_set(conn), (
+            "restored DB has no master-password envelope — backup failed "
+            "to capture the vault state"
+        )
+        # Wrong password must be rejected — proves the backup didn't
+        # somehow reset the envelope.
+        with pytest.raises(mp.WrongMasterPassword):
+            mp.unlock(conn, password="wrong-pw-xxxxxxxxxxxxxxxxxxxxxxxxxx")
+        # Correct password must still unlock — proves the salt+verifier
+        # survived the file copy intact.
+        mp.unlock(conn, password=PW)
