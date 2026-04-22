@@ -297,6 +297,33 @@ def _apply_insert(
     return Inserted(asset_id=asset_id)
 
 
+def _build_scan_diff_body(
+    *,
+    changed_fields: dict[str, str | None],
+    new_mac: str | None,
+    open_ports: frozenset[int] | set[int] | tuple[int, ...] | None,
+) -> str | None:
+    """Render the `scan_diff` timeline body for an observation that moved
+    the needle. Returns None when there's nothing to report -- the
+    caller uses that to skip the timeline append entirely.
+
+    Pure function of its inputs so the output format is unit-testable
+    without a DB. Field ordering follows `changed_fields` iteration
+    order; port list is sorted numerically.
+    """
+    parts: list[str] = []
+    for name, value in changed_fields.items():
+        parts.append(f"{name} -> {value!r}")
+    if new_mac is not None:
+        parts.append(f"new MAC {new_mac}")
+    if open_ports:
+        ports_str = ", ".join(str(p) for p in sorted(open_ports))
+        parts.append(f"open ports: {ports_str}")
+    if not parts:
+        return None
+    return "Scan observed: " + "; ".join(parts)
+
+
 def _apply_update(
     conn: sqlite3.Connection,
     obs: Observation,
@@ -360,20 +387,17 @@ def _apply_update(
         for name, fv in applied.items()
         if existing.get(name) is None or existing[name].value != fv.value
     )
-    if visible_changes or new_mac_bound or obs.open_ports:
-        parts: list[str] = []
-        for name in visible_changes:
-            parts.append(f"{name} -> {applied[name].value!r}")
-        if new_mac_bound:
-            parts.append(f"new MAC {obs.mac}")
-        if obs.open_ports:
-            ports_str = ", ".join(str(p) for p in sorted(obs.open_ports))
-            parts.append(f"open ports: {ports_str}")
+    diff_body = _build_scan_diff_body(
+        changed_fields={name: applied[name].value for name in visible_changes},
+        new_mac=obs.mac if new_mac_bound else None,
+        open_ports=obs.open_ports,
+    )
+    if diff_body is not None:
         _append_timeline(
             conn,
             asset_id=asset_id,
             kind="scan_diff",
-            body="Scan observed: " + "; ".join(parts),
+            body=diff_body,
             now=now,
             author="scanner",
         )
