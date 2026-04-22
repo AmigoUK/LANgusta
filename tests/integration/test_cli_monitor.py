@@ -385,3 +385,59 @@ def test_monitor_daemon_refuses_to_overwrite_running_pid_file(
     assert pid_file.read_text() == original, (
         "PID file was clobbered by a second daemon invocation"
     )
+
+
+# ---------------------------------------------------------------------------
+# Wave-3 TEST-T-002 — monitor stop exit codes across the 3 branches
+# ---------------------------------------------------------------------------
+
+
+def test_monitor_stop_exits_1_when_pid_file_is_missing(home: Path) -> None:
+    """No PID file → exit 1 with a clear "no monitor daemon" message."""
+    r = runner.invoke(app, ["monitor", "stop"], env=_env(home))
+    assert r.exit_code == 1, f"stdout={r.stdout!r} stderr={r.stderr!r}"
+    combined = (r.stdout + (r.stderr or "")).lower()
+    assert "no monitor daemon" in combined
+
+
+def test_monitor_stop_exits_0_and_clears_stale_pid_file(home: Path) -> None:
+    """A stale PID file (recorded PID not running) is a no-op success
+    — it gets cleared and the command exits 0."""
+    pid_file = home / ".langusta" / "monitor.pid"
+    pid_file.parent.mkdir(parents=True, exist_ok=True)
+    pid_file.write_text("9999999\n")
+
+    r = runner.invoke(app, ["monitor", "stop"], env=_env(home))
+
+    assert r.exit_code == 0, f"stdout={r.stdout!r} stderr={r.stderr!r}"
+    assert not pid_file.exists(), "stale PID file was not cleared"
+
+
+def test_monitor_stop_exits_2_on_graceful_shutdown_timeout(
+    home: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If the daemon doesn't exit within --timeout, stop returns
+    exit code 2 (distinct from 1) so scripts can tell a missing PID
+    apart from a stuck daemon."""
+    from langusta.monitor import daemon_control
+
+    class _LiveState:
+        path = home / ".langusta" / "monitor.pid"
+        pid = 123
+        alive = True
+
+    class _StuckResult:
+        path = _LiveState.path
+        pid = 123
+        alive = True  # still alive after the timeout -> stop returns 2
+
+    monkeypatch.setattr(
+        daemon_control, "read_pid_file", lambda _p: _LiveState(),
+    )
+    monkeypatch.setattr(
+        daemon_control, "stop_via_pid_file",
+        lambda _p, *, timeout_seconds: _StuckResult(),
+    )
+
+    r = runner.invoke(app, ["monitor", "stop"], env=_env(home))
+    assert r.exit_code == 2, f"stdout={r.stdout!r} stderr={r.stderr!r}"
