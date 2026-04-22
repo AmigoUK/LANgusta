@@ -7,6 +7,7 @@ paired with their MAC addresses for identity resolution.
 
 from __future__ import annotations
 
+from langusta.core.models import normalize_mac
 from langusta.platform.base import PlatformBackend
 
 
@@ -23,5 +24,5 @@ def arp_lookup(
     found: dict[str, str] = {}
     for ip, mac in backend.arp_table():
         if ip in target_ips and ip not in found:
-            found[ip] = mac.lower()
+            found[ip] = normalize_mac(mac)
     return found

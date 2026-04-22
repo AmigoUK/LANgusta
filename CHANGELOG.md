@@ -8,6 +8,18 @@ Pre-1.0 versions may introduce breaking changes on any minor bump.
 
 ## [Unreleased]
 
+### Fixed (low-sev hygiene)
+
+- **`monitor start` closes its parent-side log fd** after Popen dups it into the child; previously the parent leaked one fd per invocation. Wave-3 M-004.
+- **`mdns_discover` logs the failure to stderr** when the browser function raises, instead of silently swallowing. Wave-3 C-020.
+
+### Changed (code hygiene)
+
+- **Single canonical path helper for the always-on notifications log**: `paths.notifications_log_path()` replaces two `langusta_home() / "notifications.log"` literals. Wave-3 A-003.
+- **MAC normalisation routed through `core.models.normalize_mac`** instead of scattered `.lower()` calls across the DAL, writer, importers, and ARP enrichment. One owner = one place to evolve (e.g. if we ever strip separators). Wave-3 A-013.
+- **`langusta.platform.NotImplementedCapability` imported from the package root** rather than reaching into `langusta.platform.base` from `cli.py`. Wave-3 A-023.
+- **Top-of-module imports replace function-local re-imports in `cli.py` and `scan/orchestrator.py`** (`json`, `pathlib.Path`, `asyncio`). Wave-3 A-008 / A-020.
+
 ### Security
 
 - **`known_hosts` is chmod'd 0o600 on every write**, regardless of process umask. Wave-3 S-010; a daemon running with a loose inherited umask would otherwise create the TOFU store at 0o644 and let local attackers overwrite or pre-seed pins.

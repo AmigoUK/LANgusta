@@ -71,6 +71,7 @@ def test_all_canonical_paths_live_under_langusta_home(
         paths.known_hosts_path,
         paths.monitor_pid_path,
         paths.monitor_log_path,
+        paths.notifications_log_path,
     ):
         result = fn()
         assert str(result).startswith(str(home)), (

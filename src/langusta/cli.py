@@ -7,8 +7,10 @@ M1: add, list
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 from datetime import UTC, datetime
+from pathlib import Path
 
 import typer
 
@@ -520,7 +522,6 @@ def backup_verify(
     path: str = typer.Argument(..., help="Backup file path to check."),
 ) -> None:
     """PRAGMA integrity_check against a backup."""
-    from pathlib import Path
     ok = backup.verify(Path(path))
     typer.echo("ok" if ok else "CORRUPT")
     if not ok:
@@ -551,13 +552,11 @@ def export_cmd(
     ),
 ) -> None:
     """Export the user-owned asset data as JSON (credentials excluded)."""
-    import json as _json
     with connect(paths.db_path()) as conn:
         dump = export_mod.export_to_dict(conn)
-    payload = _json.dumps(dump, indent=2, sort_keys=True)
+    payload = json.dumps(dump, indent=2, sort_keys=True)
     if output:
-        from pathlib import Path as _Path
-        _Path(output).write_text(payload)
+        Path(output).write_text(payload)
     else:
         typer.echo(payload)
 
@@ -567,9 +566,7 @@ def import_cmd(
     path: str = typer.Argument(..., help="JSON dump produced by `langusta export`."),
 ) -> None:
     """Import a previously-exported JSON dump into this (empty) DB."""
-    import json as _json
-    from pathlib import Path as _Path
-    data = _json.loads(_Path(path).read_text())
+    data = json.loads(Path(path).read_text())
     with connect(paths.db_path()) as conn:
         try:
             export_mod.import_from_dict(conn, data)
@@ -588,9 +585,8 @@ def import_lansweeper_cmd(
     Duplicate MACs or IPs (colliding with rows already in the DB) are
     skipped — run `langusta list` first to see what's already present.
     """
-    from pathlib import Path as _Path
     now = datetime.now(UTC)
-    path = _Path(csv_path)
+    path = Path(csv_path)
     if not path.exists():
         typer.echo(f"error: file not found: {path}", err=True)
         raise typer.Exit(code=1)
@@ -783,7 +779,7 @@ def monitor_run() -> None:
     vault = _unlock_vault() if needs_vault else None
 
     now = datetime.now(UTC)
-    logfile = paths.langusta_home() / "notifications.log"
+    logfile = paths.notifications_log_path()
     with connect(paths.db_path()) as conn:
         summary = asyncio.run(
             run_once(conn, now=now, notifications_logfile=logfile, vault=vault),
@@ -814,7 +810,7 @@ def monitor_install_service(
     import shutil
     import sys as _sys
 
-    from langusta.platform.base import NotImplementedCapability
+    from langusta.platform import NotImplementedCapability
 
     backend = get_backend()
     # Resolve the binary path so the generated unit references an absolute
@@ -890,7 +886,7 @@ def monitor_daemon(
     # Stale PID files are safe to overwrite; a living daemon is not.
     daemon_control.write_pid_file(pid_path, os.getpid())
     typer.echo(f"langusta monitor daemon — cycle every {interval}s (Ctrl+C to stop)")
-    logfile = paths.langusta_home() / "notifications.log"
+    logfile = paths.notifications_log_path()
     try:
         while True:
             now = datetime.now(UTC)
@@ -940,7 +936,6 @@ def monitor_start(
 
     log_path = paths.monitor_log_path()
     log_path.parent.mkdir(parents=True, exist_ok=True)
-    log = log_path.open("a", encoding="utf-8")
     # Pass env= explicitly and strip LANGUSTA_MASTER_PASSWORD. Inheriting
     # the parent's env would leave the master password visible in the
     # daemon's /proc/<pid>/environ to any local process that can stat
@@ -952,14 +947,18 @@ def monitor_start(
         k: v for k, v in os.environ.items()
         if k != "LANGUSTA_MASTER_PASSWORD"
     }
-    proc = subprocess.Popen(
-        [sys.executable, "-m", "langusta", "monitor", "daemon",
-         "--foreground", "--interval", str(interval)],
-        stdout=log, stderr=subprocess.STDOUT,
-        stdin=subprocess.DEVNULL,
-        start_new_session=True,
-        env=child_env,
-    )
+    # Close the parent's copy of the log fd after Popen dups it into the
+    # child. Without this the parent leaks one fd per `monitor start`
+    # invocation (Wave-3 finding M-004).
+    with log_path.open("a", encoding="utf-8") as log:
+        proc = subprocess.Popen(
+            [sys.executable, "-m", "langusta", "monitor", "daemon",
+             "--foreground", "--interval", str(interval)],
+            stdout=log, stderr=subprocess.STDOUT,
+            stdin=subprocess.DEVNULL,
+            start_new_session=True,
+            env=child_env,
+        )
     # The spawned process writes its own PID into the file when it
     # reaches `monitor_daemon` above; record the subprocess PID here as
     # well so `stop` works even if the child hasn't got that far yet.

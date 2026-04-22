@@ -110,7 +110,16 @@ async def discover(
     fn = browser_fn if browser_fn is not None else _real_browse
     try:
         records = await fn(timeout)
-    except Exception:
+    except Exception as exc:
+        # mDNS is an optional enrichment; a failure here must not abort
+        # the whole scan. Log the reason to stderr so the operator can
+        # investigate ("discovered no hosts" has many causes) instead of
+        # silently returning an empty map. Wave-3 finding C-020.
+        import sys
+        print(
+            f"mDNS discovery failed: {type(exc).__name__}: {exc}",
+            file=sys.stderr,
+        )
         return {}
 
     out: dict[str, str] = {}

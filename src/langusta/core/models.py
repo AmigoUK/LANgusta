@@ -33,3 +33,14 @@ class Asset:
     last_seen: datetime
     source: str  # 'scanned' | 'manual' | 'imported'
     macs: list[str] = field(default_factory=list)
+
+
+def normalize_mac(mac: str) -> str:
+    """Return the canonical storage form of a MAC address.
+
+    LANgusta stores MAC addresses lowercase, preserving the caller's
+    separator (colons, dashes, etc.). Every DAL/ingestion site that
+    persists or looks up a MAC routes through here so the
+    normalisation lives in one place (Wave-3 finding A-013).
+    """
+    return mac.lower()

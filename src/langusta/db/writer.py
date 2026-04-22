@@ -27,6 +27,7 @@ from langusta.core.identity import (
     Update,
     resolve,
 )
+from langusta.core.models import normalize_mac
 from langusta.core.provenance import FieldProvenance, FieldValue, merge_scan_result
 from langusta.db import proposed_changes as pc_dal
 from langusta.db import timeline as tl_dal
@@ -100,7 +101,7 @@ def _obs_to_fields(obs: Observation) -> dict[str, str]:
 
 
 def _obs_to_candidate(obs: Observation) -> Candidate:
-    macs = frozenset({obs.mac.lower()}) if obs.mac else frozenset()
+    macs = frozenset({normalize_mac(obs.mac)}) if obs.mac else frozenset()
     return Candidate(hostname=obs.hostname, primary_ip=obs.primary_ip, macs=macs)
 
 
@@ -171,7 +172,7 @@ def _bind_mac(
     a DAL-level race we don't auto-fix.
     """
     now_iso = _iso(now)
-    normalised = mac.lower()
+    normalised = normalize_mac(mac)
     row = conn.execute(
         "SELECT asset_id FROM mac_addresses WHERE mac = ?",
         (normalised,),
