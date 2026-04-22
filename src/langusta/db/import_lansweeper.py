@@ -18,6 +18,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
+from langusta.core.models import normalize_mac
+
 
 @dataclass(frozen=True, slots=True)
 class ImportReport:
@@ -56,7 +58,7 @@ def _normalise_headers(row: dict[str, str]) -> dict[str, str]:
 
 def _mac_exists(conn: sqlite3.Connection, mac: str) -> bool:
     row = conn.execute(
-        "SELECT 1 FROM mac_addresses WHERE mac = ?", (mac.lower(),),
+        "SELECT 1 FROM mac_addresses WHERE mac = ?", (normalize_mac(mac),),
     ).fetchone()
     return row is not None
 
@@ -138,7 +140,7 @@ def import_lansweeper_csv(
                 conn.execute(
                     "INSERT INTO mac_addresses (asset_id, mac, first_seen, last_seen) "
                     "VALUES (?, ?, ?, ?)",
-                    (asset_id, mac.lower(), iso, iso),
+                    (asset_id, normalize_mac(mac), iso, iso),
                 )
 
             imported += 1

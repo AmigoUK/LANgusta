@@ -55,3 +55,11 @@ def monitor_pid_path() -> Path:
 def monitor_log_path() -> Path:
     """stdout/stderr capture file for `langusta monitor start`."""
     return langusta_home() / "monitor.log"
+
+
+def notifications_log_path() -> Path:
+    """Always-on notification log the dispatcher appends to per event.
+    Separate from any user-configured `logfile` sinks — those point at
+    a path the operator chose via `notify add-logfile`.
+    """
+    return langusta_home() / "notifications.log"

@@ -16,6 +16,8 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime
 
+from langusta.core.models import normalize_mac
+
 
 @dataclass(frozen=True, slots=True)
 class ImportReport:
@@ -86,7 +88,7 @@ def _extract_model(device: dict) -> str | None:
 
 def _mac_exists(conn: sqlite3.Connection, mac: str) -> bool:
     return conn.execute(
-        "SELECT 1 FROM mac_addresses WHERE mac = ?", (mac.lower(),),
+        "SELECT 1 FROM mac_addresses WHERE mac = ?", (normalize_mac(mac),),
     ).fetchone() is not None
 
 

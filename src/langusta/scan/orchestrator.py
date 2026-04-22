@@ -8,6 +8,7 @@ path that upholds the scanner-proposes-human-disposes invariant.
 
 from __future__ import annotations
 
+import asyncio
 import sqlite3
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -95,10 +96,9 @@ async def run_scan(
     arp_map = arp_lookup(alive_set, backend=platform_backend)
 
     # Run enrichment stages concurrently against alive hosts.
-    import asyncio as _asyncio
-    rdns_task = _asyncio.create_task(resolve_many(alive_set))
-    tcp_task = _asyncio.create_task(probe_ports_many(alive_set))
-    mdns_task = _asyncio.create_task(mdns_discover(target_ips=alive_set))
+    rdns_task = asyncio.create_task(resolve_many(alive_set))
+    tcp_task = asyncio.create_task(probe_ports_many(alive_set))
+    mdns_task = asyncio.create_task(mdns_discover(target_ips=alive_set))
 
     snmp_map: dict[str, str] = {}
     if snmp_client is not None and snmp_auth is not None and alive_set:
@@ -109,15 +109,15 @@ async def run_scan(
                 sys_descr = None
             return ip, sys_descr
 
-        snmp_gather = _asyncio.gather(*(_snmp_one(ip) for ip in alive_ips))
-        rdns_map, tcp_map, mdns_map, snmp_results = await _asyncio.gather(
+        snmp_gather = asyncio.gather(*(_snmp_one(ip) for ip in alive_ips))
+        rdns_map, tcp_map, mdns_map, snmp_results = await asyncio.gather(
             rdns_task, tcp_task, mdns_task, snmp_gather,
         )
         for ip, sys_descr in snmp_results:
             if sys_descr:
                 snmp_map[ip] = sys_descr
     else:
-        rdns_map, tcp_map, mdns_map = await _asyncio.gather(rdns_task, tcp_task, mdns_task)
+        rdns_map, tcp_map, mdns_map = await asyncio.gather(rdns_task, tcp_task, mdns_task)
 
     inserted = updated = deferred = proposed_total = 0
 

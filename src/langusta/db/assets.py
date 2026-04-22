@@ -10,7 +10,7 @@ from __future__ import annotations
 import sqlite3
 from datetime import datetime
 
-from langusta.core.models import Asset
+from langusta.core.models import Asset, normalize_mac
 from langusta.core.provenance import FieldProvenance, FieldValue
 
 # Asset columns that can carry field-level provenance.
@@ -127,7 +127,7 @@ def _insert_mac(
 ) -> None:
     """Bind a MAC to an asset. Normalises to lowercase. Raises
     DuplicateMacError if the MAC is already bound elsewhere."""
-    normalised = mac.lower()
+    normalised = normalize_mac(mac)
     now_iso = _iso(now)
     try:
         conn.execute(
