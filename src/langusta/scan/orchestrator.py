@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
-from langusta import backup as backup_mod
+from langusta.db import backup as backup_mod
 from langusta.db import scans as scans_dal
 from langusta.db.writer import Deferred, Inserted, Observation, Updated, apply_scan_observation
 from langusta.platform.base import PlatformBackend
@@ -50,7 +50,15 @@ def _default_clock() -> datetime:
 
 
 def _sqlite_path_for(conn: sqlite3.Connection) -> Path | None:
-    """Extract the on-disk path of the main database from a live connection."""
+    """Extract the on-disk path of the main database from a live connection.
+
+    Uses `PRAGMA database_list` — SQLite's documented introspection API
+    for attached databases (see https://www.sqlite.org/pragma.html#pragma_database_list).
+    The alternative is to thread `paths.db_path()` through every call
+    site; doing it via pragma keeps the scan orchestrator's surface
+    small and self-contained. Wave-3 A-021 (marked won't-fix: the
+    "PRAGMA side-channel" label overreached; this is normal usage).
+    """
     for row in conn.execute("PRAGMA database_list").fetchall():
         if row["name"] == "main":
             file = row["file"]

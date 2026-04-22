@@ -2,17 +2,16 @@
 
 from __future__ import annotations
 
-import asyncio
 import contextlib
 import time
 
+from langusta.core.net import open_tcp_connection as _open_connection
 from langusta.monitor.checks.base import CheckResult
 
-
-async def _open_connection(target: str, port: int, *, timeout: float):
-    return await asyncio.wait_for(
-        asyncio.open_connection(target, port), timeout=timeout,
-    )
+# `_open_connection` is re-exported as a module attribute so existing
+# test code can `monkeypatch.setattr("langusta.monitor.checks.tcp.
+# _open_connection", fake)`. Wave-3 A-009 dedupe with scan/tcp.py.
+__all__ = ["TcpCheck"]
 
 
 class TcpCheck:

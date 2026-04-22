@@ -42,7 +42,7 @@ The tipping consideration: monitoring's correctness is defined by surviving TUI 
 
 - Monitoring survives TUI crashes and closures — the product promise holds.
 - One scheduler owner (the daemon), no split-brain over the APScheduler job store.
-- `TimelineWriter` becomes the single integration contract between processes; SQLite is the sole IPC channel.
+- `db/writer.apply_scan_observation` (the module the earliest ADR drafts called "TimelineWriter") becomes the single integration contract between processes; SQLite is the sole IPC channel. The module is shaped as a flat set of functions around one public entry point, not a class — the original name predates the refactor; keeping it here for paper-trail consistency.
 - Failure isolation matches workload shape: TUI crash loses UI state, not monitoring state.
 
 ### Negative
