@@ -89,9 +89,18 @@ async def run_once(
     # Per-cycle credential cache: credential_id -> resolved context object.
     cred_cache: dict[int, Any] = {}
 
-    # Stateless clients: construct once per cycle.
-    snmp_client = PysnmpBackend()
-    active_ssh_client = ssh_client if ssh_client is not None else AsyncsshBackend()
+    # Stateless clients: construct only the ones any due check actually
+    # needs. A loop with nothing but ICMP/TCP/HTTP pays nothing for
+    # pysnmp / asyncssh import + socket setup. Wave-3 A-016.
+    needs_snmp = any(c.kind == "snmp_oid" for c in due)
+    needs_ssh = any(c.kind == "ssh_command" for c in due)
+    snmp_client = PysnmpBackend() if needs_snmp else None
+    if ssh_client is not None:
+        active_ssh_client: Any = ssh_client
+    elif needs_ssh:
+        active_ssh_client = AsyncsshBackend()
+    else:
+        active_ssh_client = None
 
     # Cap in-flight checks so a fleet of long-running SSH/SNMP probes can't
     # open hundreds of sockets at once.

@@ -10,6 +10,11 @@ Pre-1.0 versions may introduce breaking changes on any minor bump.
 
 ### Fixed (low-sev hygiene)
 
+- **Monitor runner constructs SNMP / SSH backends lazily**, only when a `snmp_oid` or `ssh_command` check is due in the current cycle. A pure ICMP/TCP/HTTP fleet no longer pays the pysnmp / asyncssh import + socket setup cost every cycle. Wave-3 A-016.
+- **`scan.orchestrator` cancels the rdns/tcp/mdns enrichment tasks in a `finally`**, so a BaseException (Ctrl+C, cancelled-task) doesn't orphan them. Regular Exception paths were already safe via `asyncio.gather`. Wave-3 C-018.
+- **`_has_user_data` uses `EXISTS` instead of `COUNT(*)` and allowlists the table name** against a simple-identifier regex before interpolation — short-circuits on the first row and keeps a malformed `sqlite_master` row from smuggling injection through. Wave-3 C-021.
+- **`_unlock_vault` returns the Vault AFTER leaving `with connect()`** so the commit-on-exit dance doesn't race with the caller's own connection handling. Vault holds only the derived key, not the sqlite connection, so this is pure hygiene. Wave-3 C-019.
+- **`is_heartbeat_stale` moved from `db/monitoring` to `core/monitoring`** next to the other monitor-domain pure code. `mon_dal.is_heartbeat_stale` kept as a backward-compat re-export. Wave-3 A-006.
 - **`monitor start` closes its parent-side log fd** after Popen dups it into the child; previously the parent leaked one fd per invocation. Wave-3 M-004.
 - **`mdns_discover` logs the failure to stderr** when the browser function raises, instead of silently swallowing. Wave-3 C-020.
 

@@ -9,8 +9,11 @@ from __future__ import annotations
 
 import sqlite3
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime
 
+from langusta.core.monitoring import (
+    is_heartbeat_stale as _core_is_heartbeat_stale,
+)
 from langusta.db import meta as meta_dal
 
 VALID_KINDS = frozenset({"icmp", "tcp", "http", "snmp_oid", "ssh_command"})
@@ -303,9 +306,12 @@ def is_heartbeat_stale(
     now: datetime,
     tolerance_seconds: int,
 ) -> bool:
-    if heartbeat is None:
-        return True
-    return (now - heartbeat) > timedelta(seconds=tolerance_seconds)
+    """Backward-compatible re-export of `core.monitoring.is_heartbeat_stale`
+    so existing `mon_dal.is_heartbeat_stale` call sites keep working
+    while the canonical home is in `core/` (Wave-3 A-006)."""
+    return _core_is_heartbeat_stale(
+        heartbeat, now=now, tolerance_seconds=tolerance_seconds,
+    )
 
 
 def has_cred_backed_check(conn: sqlite3.Connection) -> bool:

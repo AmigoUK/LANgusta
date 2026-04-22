@@ -96,28 +96,42 @@ async def run_scan(
     arp_map = arp_lookup(alive_set, backend=platform_backend)
 
     # Run enrichment stages concurrently against alive hosts.
+    # Wrap the gather in try/finally so a BaseException (KeyboardInterrupt,
+    # Cancelled, SystemExit) doesn't leak the in-flight tasks — gather's
+    # default return_exceptions=False cancels siblings on a regular
+    # Exception, but not on BaseException. Wave-3 C-018.
     rdns_task = asyncio.create_task(resolve_many(alive_set))
     tcp_task = asyncio.create_task(probe_ports_many(alive_set))
     mdns_task = asyncio.create_task(mdns_discover(target_ips=alive_set))
+    enrichment_tasks: list[asyncio.Task] = [rdns_task, tcp_task, mdns_task]
 
     snmp_map: dict[str, str] = {}
-    if snmp_client is not None and snmp_auth is not None and alive_set:
-        async def _snmp_one(ip: str) -> tuple[str, str | None]:
-            try:
-                sys_descr = await snmp_client.get_sys_descr(ip, auth=snmp_auth)
-            except Exception:
-                sys_descr = None
-            return ip, sys_descr
+    try:
+        if snmp_client is not None and snmp_auth is not None and alive_set:
+            async def _snmp_one(ip: str) -> tuple[str, str | None]:
+                try:
+                    sys_descr = await snmp_client.get_sys_descr(
+                        ip, auth=snmp_auth,
+                    )
+                except Exception:
+                    sys_descr = None
+                return ip, sys_descr
 
-        snmp_gather = asyncio.gather(*(_snmp_one(ip) for ip in alive_ips))
-        rdns_map, tcp_map, mdns_map, snmp_results = await asyncio.gather(
-            rdns_task, tcp_task, mdns_task, snmp_gather,
-        )
-        for ip, sys_descr in snmp_results:
-            if sys_descr:
-                snmp_map[ip] = sys_descr
-    else:
-        rdns_map, tcp_map, mdns_map = await asyncio.gather(rdns_task, tcp_task, mdns_task)
+            snmp_gather = asyncio.gather(*(_snmp_one(ip) for ip in alive_ips))
+            rdns_map, tcp_map, mdns_map, snmp_results = await asyncio.gather(
+                rdns_task, tcp_task, mdns_task, snmp_gather,
+            )
+            for ip, sys_descr in snmp_results:
+                if sys_descr:
+                    snmp_map[ip] = sys_descr
+        else:
+            rdns_map, tcp_map, mdns_map = await asyncio.gather(
+                rdns_task, tcp_task, mdns_task,
+            )
+    finally:
+        for t in enrichment_tasks:
+            if not t.done():
+                t.cancel()
 
     inserted = updated = deferred = proposed_total = 0
 
