@@ -685,14 +685,20 @@ def monitor_enable(
     ),
 ) -> None:
     """Enable a monitoring check against an asset."""
-    if kind not in mon_dal.VALID_KINDS:
-        typer.echo(
-            f"error: unknown kind {kind!r}; valid: {sorted(mon_dal.VALID_KINDS)}",
-            err=True,
-        )
-        raise typer.Exit(code=2)
-    if comparator is not None and expected is None:
-        typer.echo("error: --comparator requires --expected", err=True)
+    from langusta.core.monitoring import validate_check_config
+
+    errors = validate_check_config(
+        kind,
+        oid=oid,
+        comparator=comparator,
+        expected=expected,
+        command=command,
+        username=username,
+        credential_label=credential_label,
+    )
+    if errors:
+        for msg in errors:
+            typer.echo(f"error: {msg}", err=True)
         raise typer.Exit(code=2)
 
     credential_id: int | None = None
