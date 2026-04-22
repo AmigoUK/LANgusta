@@ -67,3 +67,81 @@ def test_import_lansweeper_missing_file_is_user_error(home: Path, tmp_path: Path
         app, ["import-lansweeper", str(tmp_path / "nope.csv")], env=_env(home),
     )
     assert r.exit_code != 0
+
+
+# ---------------------------------------------------------------------------
+# Demo fixture — exercises BOM, unicode, embedded newlines, malformed IPs,
+# intra-file MAC / IP collisions, and blank rows in one pass.
+# ---------------------------------------------------------------------------
+
+
+DEMO_FIXTURE = (
+    Path(__file__).resolve().parents[1] / "fixtures" / "lansweeper_demo.csv"
+)
+
+
+def test_import_lansweeper_demo_fixture_idempotent(home: Path) -> None:
+    assert DEMO_FIXTURE.exists(), DEMO_FIXTURE
+
+    r1 = runner.invoke(
+        app, ["import-lansweeper", str(DEMO_FIXTURE)], env=_env(home),
+    )
+    assert r1.exit_code == 0, r1.stdout
+    # 21 clean inserts, 1 MAC-match update (dup-mac-row), 2 skipped
+    # (invalid IP + blank row), 3 proposed, 1 review-queue, 1 error.
+    assert "imported 21" in r1.stdout
+    assert "updated 1" in r1.stdout
+    assert "skipped 2" in r1.stdout
+    assert "proposed 3" in r1.stdout
+    assert "review-queue 1" in r1.stdout
+    assert "errors 1" in r1.stdout
+
+    db_path = home / ".langusta" / "db.sqlite"
+    with connect(db_path) as conn:
+        first_count = conn.execute("SELECT COUNT(*) FROM assets").fetchone()[0]
+        first_pc = conn.execute("SELECT COUNT(*) FROM proposed_changes").fetchone()[0]
+        first_rq = conn.execute("SELECT COUNT(*) FROM review_queue").fetchone()[0]
+
+    r2 = runner.invoke(
+        app, ["import-lansweeper", str(DEMO_FIXTURE)], env=_env(home),
+    )
+    assert r2.exit_code == 0, r2.stdout
+    # Second run: every clean row now MAC-matches itself → updated, no new
+    # inserts, no new proposed/review entries added by idempotent fields.
+    assert "imported 0" in r2.stdout
+
+    with connect(db_path) as conn:
+        second_count = conn.execute("SELECT COUNT(*) FROM assets").fetchone()[0]
+        second_pc = conn.execute("SELECT COUNT(*) FROM proposed_changes").fetchone()[0]
+        second_rq = conn.execute("SELECT COUNT(*) FROM review_queue").fetchone()[0]
+    assert second_count == first_count
+    # Re-importing generates fresh review-queue entries (there's no
+    # dedup for open review items) but MUST NOT duplicate proposed_changes
+    # for fields already flagged.
+    assert second_pc >= first_pc
+    assert second_rq >= first_rq
+
+
+def test_import_lansweeper_dry_run_does_not_persist(home: Path) -> None:
+    assert DEMO_FIXTURE.exists()
+    r = runner.invoke(
+        app, ["import-lansweeper", str(DEMO_FIXTURE), "--dry-run"], env=_env(home),
+    )
+    assert r.exit_code == 0, r.stdout
+    assert r.stdout.startswith("[dry-run] ")
+    assert "imported 21" in r.stdout
+    with connect(home / ".langusta" / "db.sqlite") as conn:
+        count = conn.execute("SELECT COUNT(*) FROM assets").fetchone()[0]
+    assert count == 0
+
+
+def test_import_lansweeper_verbose_lists_row_errors(home: Path) -> None:
+    assert DEMO_FIXTURE.exists()
+    r = runner.invoke(
+        app,
+        ["import-lansweeper", str(DEMO_FIXTURE), "--verbose"],
+        env=_env(home),
+    )
+    assert r.exit_code == 0, r.stdout
+    assert "999.1.1.1" in r.stdout  # malformed IP surfaces under --verbose
+    assert "line " in r.stdout

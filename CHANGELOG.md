@@ -74,6 +74,55 @@ Pre-1.0 versions may introduce breaking changes on any minor bump.
 - **HTTP monitor check verifies TLS certificates by default.** `HttpCheck` previously passed `verify=False` unconditionally, silently disabling certificate verification on every HTTPS probe — a LAN-local MITM risk flagged by three review lenses (Wave-3 finding M-001). `HttpCheck.run` now accepts an `insecure_tls=True` kwarg as an explicit opt-out for intentionally self-signed lab targets; persisting the flag per-check will land in a follow-up migration. Regression tests at `tests/unit/monitor/checks/test_http.py`.
 - **Migration runner no longer cascade-deletes FK-referenced child rows during rebuild-via-swap migrations.** SQLite performs an implicit `DELETE FROM` on `DROP TABLE` when `foreign_keys=ON`, which cascaded through `check_results.check_id ON DELETE CASCADE` in migration 007 and silently destroyed all historic check results on the 0.1 → 0.2 upgrade path. The runner now disables FK enforcement across the pending-migration chain (SQLite's canonical "12-step schema surgery" recipe), runs `PRAGMA foreign_key_check` afterwards to catch any genuine orphans a migration produced, and re-enables FKs. Settles Wave-2 post-review open uncertainty **C-002** against `src/langusta/db/migrate.py` and `migrations/007_monitor_snmp_ssh.sql`; regression test at `tests/unit/db/test_migrate.py::test_migrate_007_preserves_check_results_across_table_rebuild`. Users who already upgraded to 0.2.0 and lost `check_results` history should restore from their pre-migration backup at `~/.langusta/backups/db-pre-migration-*.sqlite`.
 
+## [0.2.1] — 2026-04-20
+
+Polish pass on the Lansweeper CSV importer. The conservative "skip on
+collision" behaviour shipped in rc1 is replaced with proper
+scanner-proposes-human-disposes semantics: MAC-matched rows merge through
+`core.provenance.merge_scan_result`, IP-only matches land in the
+`review_queue`, and protected-field conflicts surface in
+`proposed_changes` instead of being silently dropped.
+
+### Added
+
+- **`import-lansweeper --dry-run`** — parse, validate, and report counts
+  without persisting writes. Uses a single outer `SAVEPOINT` that is rolled
+  back before the connection commits.
+- **`import-lansweeper --verbose`** — print each per-row error with its CSV
+  line number. Each row is wrapped in its own `SAVEPOINT row_<n>` so a bad
+  row rolls back without affecting siblings.
+- **Expanded column mapping** — `detected_os`, `location`, `owner`,
+  `management_url` now map from Lansweeper's `OperatingSystem` / `Location`
+  / `Owner` / `URL` columns (plus synonyms).
+- **Demo fixture** `tests/fixtures/lansweeper_demo.csv` — ~25 rows covering
+  BOM headers, unicode hostnames, embedded newlines, malformed IPs, and
+  intra-file MAC / IP collisions.
+- New shared module `src/langusta/db/import_common.py` (`ImportOutcome`,
+  `RowError`, `apply_imported_observation`, `insert_imported_asset`) so the
+  NetBox importer can wire through the same semantics in a follow-up.
+
+### Changed
+
+- `ImportReport` now reports `imported`, `updated`, `skipped`,
+  `proposed_changes_created`, `review_queue_entries`, and `row_errors`.
+- IP validation via `ipaddress.ip_address` — invalid values become
+  `RowError` entries rather than raising.
+- Every import row that touches an asset emits a `kind='import'` timeline
+  entry authored by `'importer'`.
+
+### Tests
+
+554 tests passing (+18 net from 0.2.0). 28 unit tests in
+`tests/unit/db/test_import_lansweeper.py` and 5 integration tests in
+`tests/integration/test_cli_import_lansweeper.py`.
+
+### Deferred
+
+- Migration 008 for `serial_number` / `asset_tag` columns.
+- NetBox importer parity — wire `import_netbox.py` through
+  `apply_imported_observation`.
+- Streaming / progress for >10K-row files.
+
 ## [0.2.0] — 2026-04-19
 
 Stable 0.2.0. Consolidates rc1..rc6 into one minor release. No code change beyond the version bump.
