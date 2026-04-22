@@ -338,3 +338,41 @@ async def test_send_smtp_constructs_expected_subject_and_body(
     assert "icmp" in body
     assert "failure" in body
     assert "no response" in body  # the detail line
+
+
+# ---------------------------------------------------------------------------
+# Wave-3 TEST-C-010 — logfile-write failures surface to stderr
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_dispatch_surfaces_logfile_write_failure_to_stderr(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The always-on log-sink write used to be wrapped in
+    `contextlib.suppress(OSError)` — a failure (disk full, EACCES on
+    a symlink loop, out-of-quota) disappeared silently and the
+    operator never learned the trail was empty. Failures must surface
+    to stderr so the service manager picks them up.
+
+    Monkeypatches the log-append helper to raise -- platform-level
+    perms aren't reliable under the test runner (often root in CI)."""
+    def boom(*_a: object, **_kw: object) -> None:
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(
+        "langusta.monitor.notifications._append_log_line", boom,
+    )
+
+    logfile = tmp_path / "notifications.log"
+    await dispatch(_event(), sinks=[], logfile_path=logfile)
+
+    err = capsys.readouterr().err
+    assert str(logfile) in err, (
+        f"logfile path should appear in the stderr message; got {err!r}"
+    )
+    assert "No space left" in err or "28" in err, (
+        f"the underlying OSError reason should surface; got {err!r}"
+    )
