@@ -1044,6 +1044,29 @@ def notify_add_webhook(
     typer.echo(f"added webhook sink id={sid} label={label}")
 
 
+@notify_app.command("add-logfile")
+def notify_add_logfile(
+    label: str = typer.Option(..., "--label", help="Unique name for this sink."),
+    path: str = typer.Option(..., "--path", help="Absolute path to append JSON events to."),
+) -> None:
+    """Register a logfile sink. Each monitor event is appended as one
+    JSON line to `path`. Distinct from the always-on
+    `~/.langusta/notifications.log` — users add this sink when they want
+    an additional, explicitly-configured destination (e.g. under a
+    log-rotation directory)."""
+    now = datetime.now(UTC)
+    with connect(paths.db_path()) as conn:
+        try:
+            sid = notif_dal.create(
+                conn, label=label, kind="logfile",
+                config={"path": path}, now=now,
+            )
+        except notif_dal.DuplicateLabel as exc:
+            typer.echo(f"error: {exc}", err=True)
+            raise typer.Exit(code=1) from exc
+    typer.echo(f"added logfile sink id={sid} label={label}")
+
+
 @notify_app.command("add-smtp")
 def notify_add_smtp(
     label: str = typer.Option(..., "--label", help="Unique name for this sink."),
