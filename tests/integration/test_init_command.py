@@ -97,3 +97,52 @@ def test_init_creates_backups_directory(tmp_path: Path) -> None:
     home.mkdir()
     _run("init", env={"HOME": str(home)})
     assert (home / ".langusta" / "backups").is_dir()
+
+
+# ---------------------------------------------------------------------------
+# Wave-3 TEST-S-002 — no mid-flight exposure window
+# ---------------------------------------------------------------------------
+
+
+@POSIX_ONLY
+def test_init_never_leaves_db_world_readable_at_any_moment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Post-init file modes are already asserted at 0700/0600 above, but
+    the end-state test misses the *window* between DB creation and the
+    final chmod. If a process with default umask 022 creates the DB, the
+    file is 0644 during the vault-setup write — exposing the salt and
+    verifier to every local user. This observes mid-flight mode by
+    spying on `mp.setup` (called AFTER DB creation but BEFORE the final
+    enforce_private), and asserts neither `group` nor `other` ever had
+    read/write bits."""
+    home = tmp_path / "home"
+    home.mkdir()
+
+    snapshots: dict[str, int] = {}
+    from langusta.crypto import master_password as mp
+
+    original_setup = mp.setup
+
+    def spy_setup(conn, *, password, now):  # type: ignore[no-untyped-def]
+        db = home / ".langusta" / "db.sqlite"
+        snapshots["db_mid_init"] = stat.S_IMODE(db.stat().st_mode)
+        snapshots["home_mid_init"] = stat.S_IMODE(
+            (home / ".langusta").stat().st_mode,
+        )
+        return original_setup(conn, password=password, now=now)
+
+    monkeypatch.setattr(mp, "setup", spy_setup)
+
+    r = _run("init", env={"HOME": str(home)})
+    assert r.exit_code == 0, r.stdout
+
+    assert "db_mid_init" in snapshots, "spy was not triggered — init flow changed"
+    assert snapshots["db_mid_init"] & 0o077 == 0, (
+        f"DB was mode {oct(snapshots['db_mid_init'])} during init — "
+        "vault salt/verifier exposed to group/other"
+    )
+    assert snapshots["home_mid_init"] & 0o077 == 0, (
+        f"~/.langusta was mode {oct(snapshots['home_mid_init'])} during "
+        "init — DB and backups directory enumerable by group/other"
+    )
