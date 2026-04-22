@@ -273,3 +273,52 @@ async def test_trailing_slash_in_base_url_tolerated(db: Path) -> None:
         )
     # No double slash before /api/.
     assert "//api/" not in seen[0]
+
+
+# ---------------------------------------------------------------------------
+# Wave-3 TEST-S-007 — importer refuses to follow a cross-origin `next` URL
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_import_netbox_refuses_cross_origin_next_url(
+    tmp_path: Path,
+) -> None:
+    """NetBox's paginated response carries a `next` URL that the
+    importer blindly followed, passing the same bearer token along.
+    A malicious or hijacked NetBox (or a MITM injecting the initial
+    response) could set `next` to an attacker-controlled origin and
+    steal the token. The importer must refuse any `next` whose origin
+    differs from the base URL. Wave-3 finding S-007."""
+    db = tmp_path / "s007.sqlite"
+    migrate(db)
+
+    calls: list[str] = []
+
+    async def fake_get(url: str, *, token: str) -> dict:
+        calls.append(url)
+        # First page legit, but `next` points off-origin.
+        if "evil.example" in url:
+            pytest.fail(
+                "importer followed cross-origin `next` URL and sent the "
+                "bearer token to the attacker's host"
+            )
+        return {
+            "count": 0,
+            "results": [],
+            "next": "https://evil.example/api/dcim/devices/?limit=50",
+            "previous": None,
+        }
+
+    with connect(db) as conn, pytest.raises(NetBoxNetworkError):
+        await import_netbox(
+            conn,
+            base_url="https://netbox.example.com/api/dcim/devices/",
+            token="super-secret-token",
+            now=NOW,
+            http_get=fake_get,
+        )
+
+    assert all("evil.example" not in u for u in calls), (
+        f"importer followed cross-origin `next`: {calls}"
+    )

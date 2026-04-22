@@ -96,6 +96,19 @@ def _ip_exists(conn: sqlite3.Connection, ip: str) -> bool:
     ).fetchone() is not None
 
 
+def _origin_of(url: str) -> tuple[str, str, int | None]:
+    """Return (scheme, host, port) from `url`. Two URLs have the same
+    origin iff this tuple matches. Used to refuse cross-origin `next`
+    URLs in paginated fetches."""
+    from urllib.parse import urlsplit
+
+    parts = urlsplit(url)
+    # Normalise the host to lowercase; NetBox sends the URL as it was
+    # configured at the server, and DNS labels are case-insensitive.
+    host = (parts.hostname or "").lower()
+    return (parts.scheme, host, parts.port)
+
+
 async def import_netbox(
     conn: sqlite3.Connection,
     *,
@@ -107,7 +120,10 @@ async def import_netbox(
     """Import every device from NetBox's /api/dcim/devices/ endpoint.
 
     Existing assets at a colliding primary_ip are left untouched
-    (reported as skipped). Pagination follows `next` URLs until exhausted.
+    (reported as skipped). Pagination follows `next` URLs until exhausted;
+    any `next` pointing off the base URL's origin is rejected (NetBox
+    returning a cross-origin URL is either MITM injection or compromise,
+    and following it would leak the bearer token).
     """
     getter: HttpGet = http_get if http_get is not None else default_http_get
     iso = now.isoformat(timespec="seconds")
@@ -115,8 +131,15 @@ async def import_netbox(
     imported = 0
     skipped = 0
     url: str | None = _endpoint(base_url)
+    base_origin = _origin_of(base_url)
 
     while url is not None:
+        if _origin_of(url) != base_origin:
+            raise NetBoxNetworkError(
+                f"refusing to follow cross-origin `next` URL "
+                f"{url!r} (expected origin {base_origin!r}); the bearer "
+                "token would otherwise leak to a non-NetBox host"
+            )
         page = await getter(url, token=token)
         for device in page.get("results", []):
             hostname = device.get("name")
