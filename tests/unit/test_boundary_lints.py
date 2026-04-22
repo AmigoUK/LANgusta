@@ -135,3 +135,61 @@ def test_run_all_checks_aggregates_violations_from_every_check(tmp_path: Path) -
     assert any("textual" in v for v in violations)
     assert any("sys.platform" in v for v in violations)
     assert any("SELECT" in v or "raw SQL" in v.lower() for v in violations)
+
+
+# ---------------------------------------------------------------------------
+# Wave-3 TEST-A-001 — per-file size threshold
+# ---------------------------------------------------------------------------
+
+# Files we knowingly grandfather over the 600-LOC threshold. Each entry is
+# a commitment to shrink the file (see Wave-2 finding A-001 against
+# cli.py). Adding a new entry should come with an explicit rationale.
+_OVERSIZED_ALLOWLIST: frozenset[str] = frozenset({
+    "src/langusta/cli.py",
+})
+
+_MAX_LOC = 600
+
+
+def test_no_source_file_exceeds_600_loc_without_allowlist() -> None:
+    """Keeps module files small enough to read in one sitting. Anything
+    over `_MAX_LOC` lines is a signal to split — either because we've
+    accumulated multiple responsibilities or because a single flow grew
+    unchecked. Enforced at test time; not a ruff rule because ruff
+    doesn't have a LOC budget."""
+    repo_root = Path(__file__).resolve().parents[2]
+    src = repo_root / "src" / "langusta"
+    assert src.is_dir(), f"expected langusta source at {src}"
+
+    offenders: list[tuple[str, int]] = []
+    for file in sorted(src.rglob("*.py")):
+        loc = sum(1 for _ in file.read_text(encoding="utf-8").splitlines())
+        rel = str(file.relative_to(repo_root))
+        if loc > _MAX_LOC and rel not in _OVERSIZED_ALLOWLIST:
+            offenders.append((rel, loc))
+
+    assert not offenders, (
+        f"source files exceed {_MAX_LOC} LOC without an allowlist entry: "
+        f"{offenders}; either split the file or add an entry to "
+        f"_OVERSIZED_ALLOWLIST with a rationale"
+    )
+
+
+def test_oversized_allowlist_is_not_stale() -> None:
+    """Every entry in `_OVERSIZED_ALLOWLIST` must still point at a file
+    that genuinely exceeds the threshold. Remove entries when the file
+    drops under the budget — otherwise the allowlist loses signal."""
+    repo_root = Path(__file__).resolve().parents[2]
+    stale: list[str] = []
+    for rel in _OVERSIZED_ALLOWLIST:
+        p = repo_root / rel
+        if not p.is_file():
+            stale.append(f"{rel} (does not exist)")
+            continue
+        loc = sum(1 for _ in p.read_text(encoding="utf-8").splitlines())
+        if loc <= _MAX_LOC:
+            stale.append(f"{rel} ({loc} LOC — under budget, drop from list)")
+    assert not stale, (
+        "_OVERSIZED_ALLOWLIST entries are stale (remove them): "
+        f"{stale}"
+    )
