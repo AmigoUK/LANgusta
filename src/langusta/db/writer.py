@@ -183,11 +183,41 @@ def _bind_mac(
             (asset_id, normalised, now_iso, now_iso),
         )
         return True
-    if int(row["asset_id"]) == asset_id:
+    bound_asset_id = int(row["asset_id"])
+    if bound_asset_id == asset_id:
         conn.execute(
             "UPDATE mac_addresses SET last_seen = ? WHERE mac = ?",
             (now_iso, normalised),
         )
+        return False
+    # MAC is bound to a different asset — the identity resolver is
+    # supposed to catch this and return Ambiguous, but a concurrent
+    # scan race can land here. Surface the conflict on both assets'
+    # timelines so the operator sees it rather than losing the signal
+    # on a silent return.
+    _append_timeline(
+        conn,
+        asset_id=bound_asset_id,
+        kind="system",
+        body=(
+            f"MAC {normalised} also observed on asset #{asset_id} — "
+            "possible collision or identity race; resolver did not "
+            "catch this"
+        ),
+        now=now,
+        author="scanner",
+    )
+    _append_timeline(
+        conn,
+        asset_id=asset_id,
+        kind="system",
+        body=(
+            f"MAC {normalised} is already bound to asset "
+            f"#{bound_asset_id}; not re-bound"
+        ),
+        now=now,
+        author="scanner",
+    )
     return False
 
 

@@ -237,3 +237,57 @@ def test_ambiguous_resolution_writes_review_queue_row(scan_ctx) -> None:
         a2_now = assets_dal.get_by_id(conn, a2)
     assert a1_now is not None and a1_now.hostname == "alpha"
     assert a2_now is not None and a2_now.hostname == "bravo"
+
+
+# ---------------------------------------------------------------------------
+# Wave-3 TEST-C-015 — MAC conflict is not silently dropped
+# ---------------------------------------------------------------------------
+
+
+def test_bind_mac_to_different_asset_surfaces_a_timeline_warning(
+    scan_ctx,
+) -> None:
+    """When `_bind_mac` is called for asset B with a MAC already owned
+    by asset A (the DAL-level race the resolver is supposed to catch
+    but can't in a concurrent-scan edge), the DB previously returned
+    False with no signal. The conflict must land in at least one
+    observable record so an operator / alerting pipeline can notice.
+    Wave-3 finding C-015 (single-lens correctness, medium)."""
+    from langusta.db.writer import _bind_mac
+
+    db, _sid = scan_ctx
+
+    with connect(db) as conn:
+        a_id = assets_dal.insert_manual(
+            conn, hostname="a", primary_ip="10.0.0.1",
+            mac="aa:bb:cc:dd:ee:ff", now=NOW,
+        )
+        b_id = assets_dal.insert_manual(
+            conn, hostname="b", primary_ip="10.0.0.2", now=NOW,
+        )
+
+        # Race-simulating direct call: bind A's MAC to asset B.
+        _bind_mac(conn, b_id, "aa:bb:cc:dd:ee:ff", now=LATER)
+
+    with connect(db) as conn:
+        # The conflict must surface on at least one asset's timeline —
+        # kind is 'system' (the schema's closest-fit valid kind) and
+        # the body names the MAC and the other asset so a human (or
+        # an alerting grep) can spot it.
+        collision_mentions = conn.execute(
+            "SELECT asset_id, body FROM timeline_entries "
+            "WHERE asset_id IN (?, ?) AND body LIKE ?",
+            (a_id, b_id, "%aa:bb:cc:dd:ee:ff%"),
+        ).fetchall()
+
+    bodies = [r["body"] for r in collision_mentions]
+    assert bodies, (
+        "MAC conflict silently dropped — neither asset timeline carries "
+        "an entry that names the colliding MAC"
+    )
+    assert any(
+        "collision" in b.lower()
+        or "already bound" in b.lower()
+        or "also observed" in b.lower()
+        for b in bodies
+    ), f"timeline entries don't describe the collision: {bodies!r}"
