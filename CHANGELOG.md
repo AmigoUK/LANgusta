@@ -8,6 +8,13 @@ Pre-1.0 versions may introduce breaking changes on any minor bump.
 
 ## [Unreleased]
 
+### Security
+
+- **`known_hosts` is chmod'd 0o600 on every write**, regardless of process umask. Wave-3 S-010; a daemon running with a loose inherited umask would otherwise create the TOFU store at 0o644 and let local attackers overwrite or pre-seed pins.
+- **`monitor stop` refuses to signal a PID whose `/proc/<pid>/cmdline` doesn't mention 'langusta'**. Wave-3 S-012 — guards against SIGTERM'ing an unrelated process after the daemon has crashed and its pid got reassigned. Falls back to trust on non-Linux hosts where /proc is unavailable.
+- **SNMPv3 credentials using MD5, DES, or 3DES emit a `WeakSnmpv3ProtocolWarning`** at `SnmpV3Auth` construction time. Wave-3 S-011. Operators still get to use those protocols (some legacy devices need them) but now learn they're cryptographically broken and should migrate to SHA / AES-128+.
+- **`LANGUSTA_HOME` must be an absolute path** or `langusta_home()` raises `ValueError`. Wave-3 S-013 — a relative override would resolve to the CWD and could land the DB tree in an unexpected directory. Empty env var still falls back to the default.
+
 ### Changed
 
 - **`langusta monitor enable` now surfaces every validation error at once.** Previously the CLI stopped at the first error (missing `--oid`) and the user fixed it only to hit the next one (missing `--credential-label`). The new single-owner validator (`langusta.core.monitoring.validate_check_config`) returns a full list of field-interaction errors; the CLI prints them all and exits 2. The DAL keeps its own single-error guards as defence-in-depth for programmatic callers. Wave-3 finding A-017.

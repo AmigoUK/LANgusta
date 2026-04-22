@@ -110,6 +110,41 @@ def test_stop_via_pid_file_cleans_stale_entry(tmp_path: Path) -> None:
     assert not path.exists()
 
 
+def test_stop_via_pid_file_refuses_when_cmdline_is_not_langusta(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Wave-3 S-012. If the recorded PID has been reassigned to an
+    unrelated process (e.g. a shell after the daemon crashed),
+    stop_via_pid_file must not signal it. Simulated by forcing the
+    /proc-based sniff helper to report 'not langusta'."""
+    from langusta.monitor import daemon_control as dc
+
+    path = tmp_path / "m.pid"
+    write_pid_file(path, os.getpid())  # alive but not langusta
+
+    monkeypatch.setattr(
+        dc, "_looks_like_langusta_process", lambda _pid: False,
+    )
+
+    kill_calls: list[tuple[int, int]] = []
+    real_kill = os.kill
+
+    def _spy_kill(pid: int, sig_: int) -> None:
+        kill_calls.append((pid, sig_))
+        if sig_ == 0:
+            real_kill(pid, sig_)
+
+    monkeypatch.setattr(dc.os, "kill", _spy_kill)
+
+    result = dc.stop_via_pid_file(path)
+
+    # No signal delivered; file cleared because we treat a non-langusta
+    # process at the recorded pid as a stale entry.
+    assert (os.getpid(), signal.SIGTERM) not in kill_calls
+    assert not path.exists()
+    assert result.alive is False
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX signals only")
 def test_stop_via_pid_file_sends_signal_to_live_process(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,

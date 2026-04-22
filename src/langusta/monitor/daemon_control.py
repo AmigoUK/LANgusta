@@ -67,6 +67,24 @@ def is_process_alive(pid: int) -> bool:
     return True
 
 
+def _looks_like_langusta_process(pid: int) -> bool:
+    """Best-effort guard: does /proc/<pid>/cmdline mention 'langusta'?
+
+    Used by `stop_via_pid_file` so a stale PID that's been reassigned to
+    some other process (a shell, a browser tab, whatever) doesn't get
+    SIGTERM'd on our behalf. Falls back to True on non-Linux (no /proc)
+    so the behaviour degrades gracefully rather than refusing every stop.
+    """
+    cmdline_path = Path(f"/proc/{pid}/cmdline")
+    try:
+        raw = cmdline_path.read_bytes()
+    except (FileNotFoundError, PermissionError, OSError):
+        # /proc absent (non-Linux, sandboxed), or we can't read the file;
+        # fall back to "trust the caller and signal" rather than refuse.
+        return True
+    return b"langusta" in raw.lower()
+
+
 def write_pid_file(path: Path, pid: int) -> None:
     """Write `pid` to `path`. Refuses to follow an existing symlink at
     that location — a symlink there is always either a test leftover or
@@ -116,6 +134,15 @@ def stop_via_pid_file(
     if state.pid is None:
         return state
     if not state.alive:
+        clear_pid_file(path)
+        return PidFileState(path=path, pid=state.pid, alive=False)
+
+    # Before signalling, confirm the pid still refers to a langusta
+    # process. A crashed daemon whose pid got reassigned to an unrelated
+    # process (shell, browser tab) would otherwise eat a SIGTERM on our
+    # behalf. `_looks_like_langusta_process` degrades to "trust" on
+    # non-Linux so the guard never returns a false negative.
+    if not _looks_like_langusta_process(state.pid):
         clear_pid_file(path)
         return PidFileState(path=path, pid=state.pid, alive=False)
 

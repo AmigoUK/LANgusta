@@ -122,3 +122,49 @@ def test_encode_snmp_v3_secret_round_trips_through_json() -> None:
     assert payload["username"] == "admin"
     assert payload["auth_protocol"] == "SHA-256"
     assert payload["priv_protocol"] == "AES-256"
+
+
+# ---------------------------------------------------------------------------
+# Wave-3 S-011 — weak-protocol deprecation warnings
+# ---------------------------------------------------------------------------
+
+
+def test_md5_auth_emits_weak_protocol_warning() -> None:
+    from langusta.scan.snmp.auth import WeakSnmpv3ProtocolWarning
+
+    with pytest.warns(WeakSnmpv3ProtocolWarning, match="MD5"):
+        SnmpV3Auth(
+            username="u", auth_protocol="MD5", auth_passphrase="p",
+            priv_protocol="AES-128", priv_passphrase="q",
+        )
+
+
+def test_des_priv_emits_weak_protocol_warning() -> None:
+    from langusta.scan.snmp.auth import WeakSnmpv3ProtocolWarning
+
+    with pytest.warns(WeakSnmpv3ProtocolWarning, match="DES"):
+        SnmpV3Auth(
+            username="u", auth_protocol="SHA", auth_passphrase="p",
+            priv_protocol="DES", priv_passphrase="q",
+        )
+
+
+def test_3des_priv_emits_weak_protocol_warning() -> None:
+    from langusta.scan.snmp.auth import WeakSnmpv3ProtocolWarning
+
+    with pytest.warns(WeakSnmpv3ProtocolWarning, match="3DES"):
+        SnmpV3Auth(
+            username="u", auth_protocol="SHA", auth_passphrase="p",
+            priv_protocol="3DES", priv_passphrase="q",
+        )
+
+
+def test_modern_sha256_aes128_emits_no_warning() -> None:
+    import warnings
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")  # turn any warning into a failure
+        SnmpV3Auth(
+            username="u", auth_protocol="SHA-256", auth_passphrase="p",
+            priv_protocol="AES-128", priv_passphrase="q",
+        )
