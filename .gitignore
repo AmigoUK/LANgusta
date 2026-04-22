@@ -80,3 +80,9 @@ logs/
 *.whl
 *.tar.gz
 snapshot_report.html
+
+# Multi-agent code review run artefacts
+.review-run/
+
+# Serena MCP server project state (per-user tooling, not committed)
+.serena/
