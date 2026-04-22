@@ -105,3 +105,34 @@ def test_macos_install_path_is_under_home(monkeypatch: pytest.MonkeyPatch, tmp_p
     monkeypatch.setenv("HOME", str(tmp_path))
     recipe = MacOSBackend().daemon_install_recipe(exec_path=EXEC_PATH)
     assert str(recipe.install_path).startswith(str(tmp_path))
+
+
+# ---------------------------------------------------------------------------
+# Wave-3 TEST-S-003 — launchd plist must not redirect logs to /tmp
+# ---------------------------------------------------------------------------
+
+
+def test_macos_plist_does_not_route_logs_through_tmp() -> None:
+    """/tmp on macOS is mode 1777 — any local user can tail the monitor
+    daemon's stdout/stderr there, or pre-create the target as a symlink
+    attack. Logs must live under the per-user ~/Library/Logs tree.
+    """
+    recipe = MacOSBackend().daemon_install_recipe(exec_path=EXEC_PATH)
+    data = plistlib.loads(recipe.content.encode("utf-8"))
+
+    stdout = data.get("StandardOutPath", "")
+    stderr = data.get("StandardErrorPath", "")
+
+    assert "/tmp/" not in stdout, (
+        f"plist StandardOutPath routes through world-readable /tmp: {stdout!r}"
+    )
+    assert "/tmp/" not in stderr, (
+        f"plist StandardErrorPath routes through world-readable /tmp: {stderr!r}"
+    )
+    assert "Library/Logs" in stdout, (
+        f"stdout should land under ~/Library/Logs/ (per-user, user-owned); "
+        f"got {stdout!r}"
+    )
+    assert "Library/Logs" in stderr, (
+        f"stderr should land under ~/Library/Logs/; got {stderr!r}"
+    )
