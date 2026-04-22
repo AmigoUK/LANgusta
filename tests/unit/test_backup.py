@@ -160,3 +160,82 @@ def test_verify_corrupt_file_returns_false(seeded) -> None:
 
 def test_verify_nonexistent_file_returns_false(tmp_path: Path) -> None:
     assert backup_mod.verify(tmp_path / "nope.sqlite") is False
+
+
+# ---------------------------------------------------------------------------
+# Wave-3 TEST-C-003 — backup.write must not leak sqlite connections
+# (batch-1 M-003 fixed this at the source; this locks the behaviour in).
+# ---------------------------------------------------------------------------
+
+
+def test_write_closes_both_sqlite_connections(
+    seeded, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`sqlite3.connect` used as a context manager commits-but-does-not-
+    close. `backup.write` opens two connections (src and dst) per call;
+    without an explicit close each call leaks two file descriptors. The
+    fix (batch-1 M-003 companion) wrapped both in contextlib.closing.
+    This test asserts the contract directly so a future refactor can't
+    silently revert it."""
+    db, backups = seeded
+
+    tracked: list[sqlite3.Connection] = []
+    real_connect = sqlite3.connect
+
+    def tracking_connect(*args: object, **kwargs: object) -> sqlite3.Connection:
+        conn = real_connect(*args, **kwargs)  # type: ignore[arg-type]
+        tracked.append(conn)
+        return conn
+
+    monkeypatch.setattr(backup_mod.sqlite3, "connect", tracking_connect)
+
+    backup_mod.write(db, backups, now=NOW, dedupe_window_hours=0)
+
+    assert len(tracked) == 2, (
+        f"expected backup.write to open 2 sqlite connections, got {len(tracked)}"
+    )
+    for leaked in tracked:
+        with pytest.raises(sqlite3.ProgrammingError):
+            leaked.execute("SELECT 1")
+        leaked.close()
+
+
+def test_write_does_not_leak_descriptors_across_many_calls(
+    seeded, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Belt-and-braces: count unique connection objects left alive after
+    many `write` calls. Not using /proc/self/fd so this runs on any
+    POSIX host without special privileges."""
+    db, backups = seeded
+
+    live_conns: list[sqlite3.Connection] = []
+    real_connect = sqlite3.connect
+
+    def tracking_connect(*args: object, **kwargs: object) -> sqlite3.Connection:
+        conn = real_connect(*args, **kwargs)  # type: ignore[arg-type]
+        # Probe whether the connection is still usable AFTER this call
+        # returns; if backup.write properly closed them, they won't be.
+        live_conns.append(conn)
+        return conn
+
+    monkeypatch.setattr(backup_mod.sqlite3, "connect", tracking_connect)
+
+    for i in range(25):
+        backup_mod.write(
+            db, backups, now=NOW + timedelta(hours=i + 1),
+            dedupe_window_hours=0,
+        )
+
+    still_alive = 0
+    for c in live_conns:
+        try:
+            c.execute("SELECT 1")
+            still_alive += 1
+            c.close()
+        except sqlite3.ProgrammingError:
+            pass
+
+    assert still_alive == 0, (
+        f"{still_alive} of {len(live_conns)} sqlite connections left "
+        "open after backup.write returned — fd leak"
+    )
