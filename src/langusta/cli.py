@@ -232,7 +232,10 @@ def scan(
     from icmplib.exceptions import SocketPermissionError
 
     from langusta.scan.orchestrator import run_scan
-    from langusta.scan.snmp.credentials import cred_to_snmp_auth
+    from langusta.scan.snmp.credentials import (
+        SnmpCredentialError,
+        resolve_snmp_credential,
+    )
     from langusta.scan.snmp.pysnmp_backend import PysnmpBackend
 
     backend = get_backend()
@@ -241,23 +244,21 @@ def scan(
     if snmp is not None:
         vault = _unlock_vault()
         with connect(paths.db_path()) as conn:
-            info = cred_dal.get_by_label(conn, snmp)
-            if info is None:
-                typer.echo(f"error: no credential with label {snmp!r}", err=True)
-                raise typer.Exit(code=1)
-            if info.kind not in {"snmp_v2c", "snmp_v3"}:
+            try:
+                snmp_auth, _ = resolve_snmp_credential(
+                    conn, label=snmp, vault=vault,
+                )
+            except SnmpCredentialError as exc:
+                typer.echo(f"error: {exc}", err=True)
+                # Missing label → 1; wrong kind / malformed secret → 2.
+                code = 1 if "no credential" in str(exc) else 2
+                raise typer.Exit(code=code) from exc
+            except (ValueError, KeyError) as exc:
                 typer.echo(
-                    f"error: credential {snmp!r} is {info.kind}, "
-                    "expected snmp_v2c or snmp_v3",
+                    f"error: malformed credential {snmp!r}: {exc}",
                     err=True,
                 )
-                raise typer.Exit(code=2)
-            secret = cred_dal.get_secret(conn, credential_id=info.id, vault=vault)
-        try:
-            snmp_auth = cred_to_snmp_auth(info, secret)
-        except (ValueError, KeyError) as exc:
-            typer.echo(f"error: malformed credential {snmp!r}: {exc}", err=True)
-            raise typer.Exit(code=2) from exc
+                raise typer.Exit(code=2) from exc
         snmp_client = PysnmpBackend()
 
     with connect(paths.db_path()) as conn:

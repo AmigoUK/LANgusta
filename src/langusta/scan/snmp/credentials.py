@@ -12,9 +12,48 @@ on kind:
 from __future__ import annotations
 
 import json
+import sqlite3
 
+from langusta.crypto.vault import Vault
+from langusta.db import credentials as cred_dal
 from langusta.db.credentials import CredentialInfo
 from langusta.scan.snmp.auth import SnmpAuth, SnmpV2cAuth, SnmpV3Auth
+
+
+class SnmpCredentialError(ValueError):
+    """The named SNMP credential is missing or the wrong kind."""
+
+
+def resolve_snmp_credential(
+    conn: sqlite3.Connection,
+    *,
+    label: str | None,
+    vault: Vault | None,
+) -> tuple[SnmpAuth | None, CredentialInfo | None]:
+    """Resolve a stored SNMP credential by label.
+
+    Returns `(None, None)` when `label` is None — "the caller didn't
+    ask for SNMP enrichment". Raises `SnmpCredentialError` when the
+    label doesn't exist or names a non-SNMP credential; raises
+    `ValueError` on a malformed stored secret (via `cred_to_snmp_auth`).
+    Requires an unlocked `vault` whenever `label` is set.
+    """
+    if label is None:
+        return None, None
+    if vault is None:
+        raise SnmpCredentialError(
+            f"vault is locked; cannot decrypt credential {label!r}"
+        )
+    info = cred_dal.get_by_label(conn, label)
+    if info is None:
+        raise SnmpCredentialError(f"no credential with label {label!r}")
+    if info.kind not in {"snmp_v2c", "snmp_v3"}:
+        raise SnmpCredentialError(
+            f"credential {label!r} is {info.kind}, "
+            "expected snmp_v2c or snmp_v3"
+        )
+    secret = cred_dal.get_secret(conn, credential_id=info.id, vault=vault)
+    return cred_to_snmp_auth(info, secret), info
 
 
 def cred_to_snmp_auth(info: CredentialInfo, secret: bytes) -> SnmpAuth:
