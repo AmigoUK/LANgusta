@@ -175,6 +175,23 @@ def test_no_source_file_exceeds_600_loc_without_allowlist() -> None:
     )
 
 
+def test_cli_does_not_reach_into_private_sender_registry() -> None:
+    """Wave-3 TEST-A-004. cli.py used to import `_SENDERS` directly from
+    langusta.monitor.notifications — a reach into private module state
+    from a different layer. A dedicated public helper
+    (`send_to_sink(sink, event)`) now covers the one call site; this
+    lint keeps cli.py from sliding back into the private import."""
+    repo_root = Path(__file__).resolve().parents[2]
+    src = (repo_root / "src" / "langusta" / "cli.py").read_text(
+        encoding="utf-8",
+    )
+    assert "_SENDERS" not in src, (
+        "cli.py reached into the private _SENDERS registry in "
+        "langusta.monitor.notifications; call the public "
+        "`send_to_sink(sink, event)` helper instead."
+    )
+
+
 def test_oversized_allowlist_is_not_stale() -> None:
     """Every entry in `_OVERSIZED_ALLOWLIST` must still point at a file
     that genuinely exceeds the threshold. Remove entries when the file

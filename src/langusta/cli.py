@@ -1135,10 +1135,7 @@ def notify_test(
     sink_id: int = typer.Argument(..., help="Sink id to fire a test event at."),
 ) -> None:
     """Fire a synthetic failure+recovery event at one sink."""
-    from langusta.monitor.notifications import (
-        _SENDERS,
-        MonitorEvent,
-    )
+    from langusta.monitor.notifications import MonitorEvent, send_to_sink
 
     with connect(paths.db_path()) as conn:
         rows = [s for s in notif_dal.list_all(conn) if s.id == sink_id]
@@ -1146,16 +1143,16 @@ def notify_test(
         typer.echo(f"error: no sink with id={sink_id}", err=True)
         raise typer.Exit(code=1)
     sink = rows[0]
-    sender = _SENDERS.get(sink.kind)
-    if sender is None:
-        typer.echo(f"error: no sender for kind={sink.kind}", err=True)
-        raise typer.Exit(code=1)
     event = MonitorEvent(
         asset_id=0, asset_hostname="langusta-test", asset_ip="127.0.0.1",
         kind="failure", check_kind="test", detail="synthetic test event",
         occurred_at=datetime.now(UTC),
     )
-    ok = asyncio.run(sender(sink.config, event))
+    try:
+        ok = asyncio.run(send_to_sink(sink, event))
+    except ValueError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
     typer.echo(f"sink {sink.label!r}: {'ok' if ok else 'FAILED'}")
     if not ok:
         raise typer.Exit(code=1)
