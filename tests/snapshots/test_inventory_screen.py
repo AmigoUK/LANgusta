@@ -65,3 +65,32 @@ def test_inventory_empty(snap_compare, empty_home: Path) -> None:
 def test_inventory_one_asset(snap_compare, one_asset_home: Path) -> None:
     """One-asset inventory shows the DataTable row with the seeded host."""
     assert snap_compare(str(APP_SCRIPT), terminal_size=(100, 24))
+
+
+@pytest.fixture
+def many_assets_home(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> Path:
+    """Seed a dozen assets so the DataTable scrolls + width-wrapping
+    rules get exercised. Names are deterministic so the snapshot is
+    stable run-to-run."""
+    seeds = []
+    for i in range(12):
+        seeds.append({
+            "hostname": f"host-{i:02d}",
+            "primary_ip": f"10.0.1.{i + 1}",
+            "mac": f"aa:bb:cc:dd:ee:{i:02x}",
+            "description": (
+                f"edge node {i}" if i % 2 == 0 else "access switch"
+            ),
+            "location": "rack-A" if i < 6 else "rack-B",
+        })
+    home = _seeded_home(tmp_path, seed_assets=seeds)
+    monkeypatch.setenv("HOME", str(home))
+    return home
+
+
+def test_inventory_many_assets(snap_compare, many_assets_home: Path) -> None:
+    """Wave-3 T-021. A dozen assets covers both the scroll path and the
+    description-wrapping rules that the one-asset snapshot doesn't."""
+    assert snap_compare(str(APP_SCRIPT), terminal_size=(100, 24))
