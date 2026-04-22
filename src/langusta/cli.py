@@ -14,10 +14,11 @@ from pathlib import Path
 
 import typer
 
-from langusta import __version__, backup, paths
+from langusta import __version__, paths
 from langusta.crypto import master_password as mp
 from langusta.crypto.vault import Vault
 from langusta.db import assets as assets_dal
+from langusta.db import backup
 from langusta.db import credentials as cred_dal
 from langusta.db import export as export_mod
 from langusta.db import import_lansweeper as import_lansweeper_mod

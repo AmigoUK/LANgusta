@@ -26,8 +26,23 @@ def _apply_pragmas(conn: sqlite3.Connection) -> None:
 
 
 @contextmanager
-def connect(path: DbPath) -> Iterator[sqlite3.Connection]:
-    """Open a SQLite connection with LANgusta pragmas and sqlite3.Row factory."""
+def connect(
+    path: DbPath, *, readonly: bool = False,
+) -> Iterator[sqlite3.Connection]:
+    """Open a SQLite connection with LANgusta pragmas and sqlite3.Row factory.
+
+    `readonly=True` opts into two things:
+      - `PRAGMA query_only = 1` rejects any write-attempting statement
+        with "attempt to write a readonly database" rather than
+        surprising the caller with side effects.
+      - Skips the commit-on-exit dance. Commit is a no-op when no
+        transaction is pending (the default LEGACY isolation mode's
+        state on a SELECT-only block) but setting `query_only` makes
+        the read-only intent structural. Wave-3 C-022.
+
+    Default (`readonly=False`) preserves the original behaviour so the
+    many existing write-path callers don't need auditing.
+    """
     if path != ":memory:":
         p = Path(path)
         p.parent.mkdir(parents=True, exist_ok=True)
@@ -38,10 +53,14 @@ def connect(path: DbPath) -> Iterator[sqlite3.Connection]:
     conn.row_factory = sqlite3.Row
     try:
         _apply_pragmas(conn)
+        if readonly:
+            conn.execute("PRAGMA query_only = 1")
         yield conn
-        conn.commit()
+        if not readonly:
+            conn.commit()
     except Exception:
-        conn.rollback()
+        if not readonly:
+            conn.rollback()
         raise
     finally:
         conn.close()

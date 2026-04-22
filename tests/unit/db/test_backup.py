@@ -13,8 +13,8 @@ from pathlib import Path
 
 import pytest
 
-from langusta import backup as backup_mod
 from langusta.db import assets as assets_dal
+from langusta.db import backup as backup_mod
 from langusta.db.connection import connect
 from langusta.db.migrate import migrate
 

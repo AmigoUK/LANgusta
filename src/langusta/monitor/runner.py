@@ -21,9 +21,11 @@ from __future__ import annotations
 
 import asyncio
 import sqlite3
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any
 
 from langusta.crypto.vault import Vault
@@ -58,7 +60,12 @@ def _default_registry() -> dict[str, Check]:
     }
 
 
-DEFAULT_REGISTRY: dict[str, Check] = _default_registry()
+# `MappingProxyType` makes the default registry read-only — a stray
+# `DEFAULT_REGISTRY[...] = ...` at runtime would raise TypeError instead
+# of silently mutating the shared module-level state every cycle uses.
+# Test code still replaces the whole module attribute via monkeypatch,
+# which is how swap-out is supposed to work. Wave-3 C-012.
+DEFAULT_REGISTRY: Mapping[str, Check] = MappingProxyType(_default_registry())
 
 
 @dataclass(frozen=True, slots=True)
@@ -73,7 +80,7 @@ async def run_once(
     conn: sqlite3.Connection,
     *,
     now: datetime,
-    check_registry: dict[str, Check] | None = None,
+    check_registry: Mapping[str, Check] | None = None,
     notifications_logfile: Path | None = None,
     vault: Vault | None = None,
     ssh_client: Any | None = None,

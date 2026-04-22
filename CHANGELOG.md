@@ -8,6 +8,13 @@ Pre-1.0 versions may introduce breaking changes on any minor bump.
 
 ## [Unreleased]
 
+### Changed (low-sev structure)
+
+- **`langusta.backup` module moved to `langusta.db.backup`**. File belongs with the rest of the DB-lifecycle code; `cli.py` and `scan/orchestrator.py` updated to the new import path. Test fixture moved from `tests/unit/` to `tests/unit/db/`. Wave-3 A-022.
+- **`scan/tcp` and `monitor/checks/tcp` share a single `open_tcp_connection` helper** in new `langusta.core.net`. Each module still re-exports `_open_connection` as a module attribute so existing tests' `monkeypatch.setattr("langusta.<path>.tcp._open_connection", fake)` keeps working. Wave-3 A-009.
+- **`DEFAULT_REGISTRY` in `monitor/runner` is now a `MappingProxyType`**, so a stray `DEFAULT_REGISTRY[...] = …` raises `TypeError` instead of silently mutating the shared registry every cycle reads. Test code keeps replacing the whole attribute via monkeypatch. Wave-3 C-012.
+- **`db.connection.connect(path, *, readonly=False)` opts into `PRAGMA query_only = 1`** and skips the commit-on-exit dance. Default behaviour unchanged; readonly callers opt in when they want the intent to be structural. Wave-3 C-022.
+
 ### Fixed (low-sev hygiene)
 
 - **Monitor runner constructs SNMP / SSH backends lazily**, only when a `snmp_oid` or `ssh_command` check is due in the current cycle. A pure ICMP/TCP/HTTP fleet no longer pays the pysnmp / asyncssh import + socket setup cost every cycle. Wave-3 A-016.

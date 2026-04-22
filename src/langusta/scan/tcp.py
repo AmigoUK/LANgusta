@@ -66,11 +66,11 @@ DEFAULT_TOP_PORTS: tuple[int, ...] = (
 )
 
 
-# Alias for tests to monkey-patch.
-async def _open_connection(ip: str, port: int, *, timeout: float):
-    return await asyncio.wait_for(
-        asyncio.open_connection(ip, port), timeout=timeout,
-    )
+# Module-level alias so tests can `monkeypatch.setattr("langusta.scan.
+# tcp._open_connection", fake)`. Delegates to the shared helper in
+# core.net to avoid the twin duplicate that was living in
+# monitor/checks/tcp.py (Wave-3 A-009).
+from langusta.core.net import open_tcp_connection as _open_connection  # noqa: E402
 
 
 async def _probe_one(ip: str, port: int, *, timeout: float) -> int | None:
