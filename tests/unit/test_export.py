@@ -229,3 +229,57 @@ def test_import_refuses_unknown_envelope_version(tmp_path: Path) -> None:
     migrate(dst)
     with connect(dst) as conn, pytest.raises(ImportRefused):
         import_from_dict(conn, dump)
+
+
+# ---------------------------------------------------------------------------
+# Column-name allowlist (Wave-3 TEST-S-001)
+# ---------------------------------------------------------------------------
+
+
+def test_import_refuses_attacker_controlled_column_name(tmp_path: Path) -> None:
+    """Dump row keys are interpolated into
+    `INSERT INTO <table> (<col_names>) ...`. A crafted key must not
+    escape the column-list and become chained SQL — the importer must
+    validate each key against the target table's actual columns.
+    """
+    db = tmp_path / "db.sqlite"
+    migrate(db)
+
+    evil_dump = {
+        "export_format_version": EXPORT_FORMAT_VERSION,
+        "schema_version": latest_schema_version(),
+        "tables": {
+            "assets": [
+                {
+                    # Canonical injection shape: close the column list,
+                    # chain a secondary statement, comment out the tail.
+                    "hostname) VALUES('pwn'); "
+                    "ATTACH DATABASE ':memory:' AS e; --": "x",
+                },
+            ],
+        },
+    }
+
+    with connect(db) as conn, pytest.raises((ImportRefused, ValueError)):
+        import_from_dict(conn, evil_dump)
+
+
+def test_import_refuses_unknown_column_even_if_name_is_plain(
+    tmp_path: Path,
+) -> None:
+    """Belt-and-braces: a plain-but-unknown column (typo, or schema drift
+    across exporter/importer versions) must fail loudly, not blow up
+    half-way through with a sqlite syntax error."""
+    db = tmp_path / "db.sqlite"
+    migrate(db)
+
+    dump = {
+        "export_format_version": EXPORT_FORMAT_VERSION,
+        "schema_version": latest_schema_version(),
+        "tables": {
+            "assets": [{"this_column_does_not_exist": "x"}],
+        },
+    }
+
+    with connect(db) as conn, pytest.raises((ImportRefused, ValueError)):
+        import_from_dict(conn, dump)
