@@ -82,3 +82,58 @@ def test_vault_remembers_salt_for_derivation() -> None:
     envelope = v1.encrypt(b"secret")
     v2 = Vault.for_tests(password="master-pw-here-long-enough", salt=v1.salt)
     assert v2.decrypt(envelope) == b"secret"
+
+
+# ---------------------------------------------------------------------------
+# Wave-3 TEST-T-012 — parametrised tampered-envelope coverage
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("tamper", [
+    "flip_first_ct_byte",
+    "flip_last_ct_byte",
+    "flip_middle_ct_byte",
+    "flip_first_nonce_byte",
+    "truncate_ct_tag",
+    "zero_nonce",
+])
+def test_every_tampering_shape_fails_decryption(
+    vault: Vault, tamper: str,
+) -> None:
+    """The existing tests cover two tampering cases (flip-first-ct-byte
+    + flip-first-nonce-byte). Parametrising across every shape
+    confirms the authenticated-encryption guarantee holds across the
+    class, not just the happy edges. Wave-3 T-012."""
+    envelope = vault.encrypt(b"secret-payload-with-enough-bytes")
+
+    if tamper == "flip_first_ct_byte":
+        bad = envelope.replace(
+            ciphertext=bytes([envelope.ciphertext[0] ^ 0xFF])
+            + envelope.ciphertext[1:],
+        )
+    elif tamper == "flip_last_ct_byte":
+        bad = envelope.replace(
+            ciphertext=envelope.ciphertext[:-1]
+            + bytes([envelope.ciphertext[-1] ^ 0xFF]),
+        )
+    elif tamper == "flip_middle_ct_byte":
+        mid = len(envelope.ciphertext) // 2
+        bad = envelope.replace(
+            ciphertext=envelope.ciphertext[:mid]
+            + bytes([envelope.ciphertext[mid] ^ 0xFF])
+            + envelope.ciphertext[mid + 1:],
+        )
+    elif tamper == "flip_first_nonce_byte":
+        bad = envelope.replace(
+            nonce=bytes([envelope.nonce[0] ^ 0xFF]) + envelope.nonce[1:],
+        )
+    elif tamper == "truncate_ct_tag":
+        # AES-GCM puts the auth tag at the end; dropping a byte breaks it.
+        bad = envelope.replace(ciphertext=envelope.ciphertext[:-1])
+    elif tamper == "zero_nonce":
+        bad = envelope.replace(nonce=b"\x00" * len(envelope.nonce))
+    else:  # pragma: no cover — parametrize covers all cases
+        raise AssertionError(f"unknown tamper variant {tamper!r}")
+
+    with pytest.raises(InvalidPassword):
+        vault.decrypt(bad)
