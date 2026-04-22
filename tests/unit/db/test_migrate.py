@@ -265,6 +265,45 @@ def _write_fake_migration(dir_: Path, mig_id: int, sql: str) -> None:
     (dir_ / f"{mig_id:03d}_fake.sql").write_text(sql)
 
 
+def test_migrate_writes_pre_migration_backup_even_without_explicit_kwarg(
+    tmp_langusta_home: Path,
+) -> None:
+    """Wave-3 TEST-A-019. Every caller of migrate() should get the ADR-0005
+    pre-migration backup by default — without having to remember to pass
+    `backups_dir=paths.backups_dir()`. The runner now defaults the kwarg
+    to `paths.backups_dir()` when unspecified."""
+    from langusta import paths
+
+    # Fabricated 2-step chain so only the last migration is pending,
+    # mirroring the style of the explicit-kwarg backup test below.
+    tmp_langusta_home.mkdir(parents=True, exist_ok=True)
+    fake_migs = tmp_langusta_home / "migrations"
+    _write_fake_migration(
+        fake_migs, 1,
+        "CREATE TABLE notes (id INTEGER PRIMARY KEY, body TEXT);",
+    )
+    db = tmp_langusta_home / "db.sqlite"
+    db.parent.mkdir(parents=True, exist_ok=True)
+    migrate(db, migrations_dir=fake_migs)
+
+    # User writes something to the DB at schema v1.
+    with connect(db) as conn:
+        conn.execute("INSERT INTO notes (body) VALUES ('must-survive')")
+
+    # Ship step 2 and migrate WITHOUT specifying backups_dir.
+    _write_fake_migration(
+        fake_migs, 2,
+        "ALTER TABLE notes ADD COLUMN tag TEXT;",
+    )
+    migrate(db, migrations_dir=fake_migs)
+
+    snaps = list(paths.backups_dir().glob("db-pre-migration-*.sqlite"))
+    assert snaps, (
+        f"expected a pre-migration snapshot under {paths.backups_dir()} "
+        "even though migrate() was called without backups_dir"
+    )
+
+
 def test_migrate_writes_pre_migration_backup_when_db_has_data(tmp_path: Path) -> None:
     """If the DB already has rows at a prior schema_version and the runner is
     advancing to a newer version, a timestamped backup must land before any

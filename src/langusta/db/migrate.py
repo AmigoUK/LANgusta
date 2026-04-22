@@ -248,12 +248,20 @@ def migrate(
             return
 
         # Pre-migration backup only when there's user data to protect.
-        if _has_user_data(conn) and backups_dir is not None:
+        # If the caller didn't specify a backups_dir, fall back to
+        # `paths.backups_dir()` so the ADR-0005 safety rail is on by
+        # default -- every production migrate() call gets the backup,
+        # without each call site having to remember the kwarg.
+        effective_backups_dir = backups_dir
+        if effective_backups_dir is None:
+            from langusta import paths
+            effective_backups_dir = paths.backups_dir()
+        if _has_user_data(conn):
             # Close the migrate-time connection temporarily? Not needed —
             # online backup API is WAL-safe with a live writer.
             path = Path(db_path) if db_path != ":memory:" else None
             if path is not None and path.exists():
-                _write_backup(path, backups_dir, current)
+                _write_backup(path, effective_backups_dir, current)
 
         # Disable FK enforcement across the pending chain. SQLite performs an
         # implicit DELETE FROM on DROP TABLE when foreign_keys=ON, which
