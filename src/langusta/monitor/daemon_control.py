@@ -68,8 +68,27 @@ def is_process_alive(pid: int) -> bool:
 
 
 def write_pid_file(path: Path, pid: int) -> None:
+    """Write `pid` to `path`. Refuses to follow an existing symlink at
+    that location — a symlink there is always either a test leftover or
+    an attack. Using O_NOFOLLOW keeps the write from clobbering whatever
+    the symlink points at; we explicitly rm the symlink (not its target)
+    and try again. O_TRUNC lets us overwrite a stale, user-owned pid
+    file from a previous daemon invocation."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(f"{pid}\n", encoding="utf-8")
+    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW
+    try:
+        fd = os.open(path, flags, 0o600)
+    except OSError as exc:
+        # ELOOP = symlink present; surface the refusal to the caller.
+        if path.is_symlink():
+            raise OSError(
+                f"refusing to follow symlink at PID file path {path}"
+            ) from exc
+        raise
+    try:
+        os.write(fd, f"{pid}\n".encode())
+    finally:
+        os.close(fd)
 
 
 def clear_pid_file(path: Path) -> None:
