@@ -332,6 +332,59 @@ def test_migrate_refuses_when_applied_migration_checksum_changes(
 
 
 # ---------------------------------------------------------------------------
+# foreign_keys pragma discipline (Wave-3 TEST-C-002b — sentinel for the
+# batch-1 fix that keeps migration-007 from cascade-deleting child rows)
+# ---------------------------------------------------------------------------
+
+
+def test_migrate_disables_foreign_keys_around_pending_chain(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ADR-0005 table-rebuild safety: the runner must turn `foreign_keys`
+    OFF before applying pending migrations and back ON afterwards. This is
+    a sentinel — if a future refactor drops the pragma dance,
+    monitoring_checks-style rebuilds will silently delete child rows again.
+
+    Uses sqlite3's `set_trace_callback` to observe every statement the
+    migrate-time connection executes (instance `.execute` is read-only and
+    can't be monkeypatched directly).
+    """
+    import contextlib
+
+    import langusta.db.migrate as mig
+
+    pragmas_seen: list[str] = []
+    original_connect = mig.connect
+
+    @contextlib.contextmanager  # type: ignore[arg-type]
+    def traced_connect(path: object):
+        with original_connect(path) as conn:  # type: ignore[arg-type]
+            conn.set_trace_callback(
+                lambda stmt: pragmas_seen.append(stmt)
+                if "foreign_keys" in stmt.lower()
+                else None,
+            )
+            try:
+                yield conn
+            finally:
+                conn.set_trace_callback(None)
+
+    monkeypatch.setattr(mig, "connect", traced_connect)
+
+    mig.migrate(tmp_path / "x.sqlite")
+
+    joined = " ".join(p.lower().replace(" ", "") for p in pragmas_seen)
+    assert "foreign_keys=off" in joined, (
+        f"expected PRAGMA foreign_keys = OFF during migrate(); "
+        f"observed pragmas: {pragmas_seen}"
+    )
+    assert "foreign_keys=on" in joined, (
+        f"expected PRAGMA foreign_keys = ON after migrate(); "
+        f"observed pragmas: {pragmas_seen}"
+    )
+
+
+# ---------------------------------------------------------------------------
 # _write_backup — connection lifecycle (Wave-3 TEST-M-003)
 # ---------------------------------------------------------------------------
 
