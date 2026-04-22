@@ -10,6 +10,9 @@ Pre-1.0 versions may introduce breaking changes on any minor bump.
 
 ### Changed
 
+- **`langusta monitor enable` now surfaces every validation error at once.** Previously the CLI stopped at the first error (missing `--oid`) and the user fixed it only to hit the next one (missing `--credential-label`). The new single-owner validator (`langusta.core.monitoring.validate_check_config`) returns a full list of field-interaction errors; the CLI prints them all and exits 2. The DAL keeps its own single-error guards as defence-in-depth for programmatic callers. Wave-3 finding A-017.
+- **`cli.py` uses a public `resolve_snmp_credential(conn, *, label, vault)` helper** instead of inlining credential lookup + kind validation + vault decode. New module `langusta.scan.snmp.credentials` also owns the new `SnmpCredentialError`. Wave-3 finding A-010; no user-visible behaviour change.
+- **`db/writer._build_scan_diff_body` is now a pure function** extracted out of `_apply_update`. Timeline body rendering (field diffs, MAC add, open ports) can be fuzz-tested without a DB; production flow is unchanged. Wave-3 finding A-011.
 - **`cli.py`'s `notify test` subcommand now calls a public `send_to_sink(sink, event)` helper** instead of reaching into the private `_SENDERS` dict in `langusta.monitor.notifications`. Behaviour is unchanged; paired lint at `tests/unit/test_boundary_lints.py` keeps the CLI from sliding back into the private import. Wave-3 finding A-004.
 
 ### Added
