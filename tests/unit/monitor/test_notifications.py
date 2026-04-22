@@ -288,3 +288,53 @@ async def test_send_webhook_failure_log_does_not_echo_token(
     assert "hooks.slack.com" in err, (
         f"failure log should still name the host: {err!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Wave-3 TEST-T-022 — send_smtp builds subject/body and returns True on OK
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_send_smtp_constructs_expected_subject_and_body(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """send_smtp's subject+body construction was implicitly covered only
+    by the dispatcher integration test — no direct assert on the
+    rendered strings existed. If the template were rewritten to drop
+    (e.g.) the host or the check kind, the operator would silently lose
+    context in their inbox. This test locks the template in."""
+    captured: dict[str, object] = {}
+
+    def fake_send(cfg: SmtpConfig, subject: str, body: str) -> None:
+        captured["cfg"] = cfg
+        captured["subject"] = subject
+        captured["body"] = body
+
+    monkeypatch.setattr(
+        "langusta.monitor.notifications._smtp_send_blocking",
+        fake_send,
+    )
+
+    config = {
+        "host": "smtp.example.com",
+        "port": 25,
+        "from": "langusta@example.com",
+        "to": "ops@example.com",
+        "starttls": False,
+    }
+    ok = await send_smtp(config, _event())
+
+    assert ok is True
+    assert isinstance(captured.get("subject"), str)
+    assert "icmp" in captured["subject"], captured["subject"]
+    assert "router" in captured["subject"], captured["subject"]
+    assert "failure" in captured["subject"], captured["subject"]
+
+    assert isinstance(captured.get("body"), str)
+    body = captured["body"]
+    assert "router" in body
+    assert "10.0.0.1" in body
+    assert "icmp" in body
+    assert "failure" in body
+    assert "no response" in body  # the detail line
