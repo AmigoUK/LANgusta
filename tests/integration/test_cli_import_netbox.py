@@ -98,3 +98,37 @@ def test_import_netbox_auth_error_surfaces_cleanly(
     )
     assert r.exit_code != 0
     assert "auth" in (r.stdout + (r.stderr or "")).lower() or "401" in (r.stdout + (r.stderr or ""))
+
+
+def test_import_netbox_surfaces_network_error_with_exit_1(
+    home: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Wave-3 TEST-T-017. NetBoxAuthError is already covered above;
+    NetBoxNetworkError (connection refused, timeout, DNS failure) is
+    a separate CLI branch and needs its own smoke test. An operator
+    hitting this path wants an exit 1 and a 'network error' prefix,
+    not a raw httpx traceback."""
+    async def fake_get(url: str, *, token: str) -> object:
+        from langusta.db.import_netbox import NetBoxNetworkError
+
+        raise NetBoxNetworkError("connection timed out after 5.0s")
+
+    monkeypatch.setattr(
+        "langusta.db.import_netbox.default_http_get", fake_get,
+    )
+
+    r = runner.invoke(
+        app, ["import-netbox", "--url", "https://netbox.example.com"],
+        env=_env(home),
+    )
+
+    assert r.exit_code == 1, f"stdout={r.stdout!r} stderr={r.stderr!r}"
+    combined = (r.stdout + (r.stderr or "")).lower()
+    assert "network error" in combined, (
+        f"import-netbox should surface a 'network error' prefix; got "
+        f"{combined!r}"
+    )
+    assert "traceback" not in combined, (
+        f"import-netbox leaked a raw traceback on NetBoxNetworkError; "
+        f"got {combined!r}"
+    )

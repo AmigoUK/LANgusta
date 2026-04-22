@@ -15,7 +15,6 @@ via SMTP. No SMS, no PagerDuty, no mobile app."
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import json
 import smtplib
 import sys
@@ -204,8 +203,17 @@ async def dispatch(
     Individual sink failures are swallowed so one broken sink doesn't block
     the others — failures go to stderr for the service-manager to pick up.
     """
-    with contextlib.suppress(OSError):
+    try:
         _append_log_line(logfile_path, event)
+    except OSError as exc:
+        # Never raise up into the monitor runner — a single broken log
+        # path must not block every other sink — but do surface the
+        # reason so the service-manager logs it instead of eating the
+        # failure silently.
+        print(
+            f"notifications log write to {logfile_path} failed: {exc}",
+            file=sys.stderr,
+        )
 
     for sink in sinks:
         if not sink.enabled:

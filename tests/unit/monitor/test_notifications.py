@@ -288,3 +288,91 @@ async def test_send_webhook_failure_log_does_not_echo_token(
     assert "hooks.slack.com" in err, (
         f"failure log should still name the host: {err!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Wave-3 TEST-T-022 — send_smtp builds subject/body and returns True on OK
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_send_smtp_constructs_expected_subject_and_body(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """send_smtp's subject+body construction was implicitly covered only
+    by the dispatcher integration test — no direct assert on the
+    rendered strings existed. If the template were rewritten to drop
+    (e.g.) the host or the check kind, the operator would silently lose
+    context in their inbox. This test locks the template in."""
+    captured: dict[str, object] = {}
+
+    def fake_send(cfg: SmtpConfig, subject: str, body: str) -> None:
+        captured["cfg"] = cfg
+        captured["subject"] = subject
+        captured["body"] = body
+
+    monkeypatch.setattr(
+        "langusta.monitor.notifications._smtp_send_blocking",
+        fake_send,
+    )
+
+    config = {
+        "host": "smtp.example.com",
+        "port": 25,
+        "from": "langusta@example.com",
+        "to": "ops@example.com",
+        "starttls": False,
+    }
+    ok = await send_smtp(config, _event())
+
+    assert ok is True
+    assert isinstance(captured.get("subject"), str)
+    assert "icmp" in captured["subject"], captured["subject"]
+    assert "router" in captured["subject"], captured["subject"]
+    assert "failure" in captured["subject"], captured["subject"]
+
+    assert isinstance(captured.get("body"), str)
+    body = captured["body"]
+    assert "router" in body
+    assert "10.0.0.1" in body
+    assert "icmp" in body
+    assert "failure" in body
+    assert "no response" in body  # the detail line
+
+
+# ---------------------------------------------------------------------------
+# Wave-3 TEST-C-010 — logfile-write failures surface to stderr
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_dispatch_surfaces_logfile_write_failure_to_stderr(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The always-on log-sink write used to be wrapped in
+    `contextlib.suppress(OSError)` — a failure (disk full, EACCES on
+    a symlink loop, out-of-quota) disappeared silently and the
+    operator never learned the trail was empty. Failures must surface
+    to stderr so the service manager picks them up.
+
+    Monkeypatches the log-append helper to raise -- platform-level
+    perms aren't reliable under the test runner (often root in CI)."""
+    def boom(*_a: object, **_kw: object) -> None:
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(
+        "langusta.monitor.notifications._append_log_line", boom,
+    )
+
+    logfile = tmp_path / "notifications.log"
+    await dispatch(_event(), sinks=[], logfile_path=logfile)
+
+    err = capsys.readouterr().err
+    assert str(logfile) in err, (
+        f"logfile path should appear in the stderr message; got {err!r}"
+    )
+    assert "No space left" in err or "28" in err, (
+        f"the underlying OSError reason should surface; got {err!r}"
+    )

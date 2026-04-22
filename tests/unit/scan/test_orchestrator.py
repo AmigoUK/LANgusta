@@ -227,3 +227,51 @@ async def test_scan_report_duration_is_non_negative(tmp_path: Path) -> None:
             ping_fn=_make_ping_fn([]), now_fn=clock,
         )
     assert report.duration_seconds == 3.0
+
+
+# ---------------------------------------------------------------------------
+# Wave-3 TEST-T-015 — single-host /32 and empty-target paths
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_run_scan_slash_32_probes_exactly_one_host(tmp_path: Path) -> None:
+    """A /32 is a common single-host probe shape — the orchestrator
+    must handle it the same way it handles /30, /24, etc., without
+    tripping a broadcast/network-address off-by-one. Covers the
+    "network address == broadcast address" edge that some iteration
+    code hits wrong."""
+    db = tmp_path / "slash32.sqlite"
+    migrate(db)
+    with connect(db) as conn:
+        report = await run_scan(
+            conn, target="10.0.0.1/32",
+            platform_backend=_StubBackend(),
+            ping_fn=_make_ping_fn(["10.0.0.1"]),
+        )
+    assert report.hosts_alive == 1, f"{report}"
+
+
+@pytest.mark.asyncio
+async def test_run_scan_with_empty_ping_result_still_records_scan_row(
+    tmp_path: Path,
+) -> None:
+    """If ping_fn reports nothing alive, run_scan must still land a
+    `scans` row — not skip the bookkeeping or raise. Represents the
+    'everything unreachable' case rather than a synthetic error."""
+    db = tmp_path / "empty.sqlite"
+    migrate(db)
+
+    async def silent_ping(targets: list[str], **_: object) -> list[PingResult]:
+        return []
+
+    with connect(db) as conn:
+        report = await run_scan(
+            conn, target="10.0.0.0/30",
+            platform_backend=_StubBackend(),
+            ping_fn=silent_ping,
+        )
+        scan_rows = conn.execute("SELECT COUNT(*) FROM scans").fetchone()
+
+    assert report.hosts_alive == 0
+    assert int(scan_rows[0]) == 1, "scans row not written on empty ping result"

@@ -125,8 +125,26 @@ async def run_once(
                 semaphore=semaphore,
             )
         )
-    outcomes = await asyncio.gather(*tasks) if tasks else []
+    # `return_exceptions=True` so that one task blowing up in its
+    # record_result / event-write path doesn't cancel siblings or
+    # prevent the heartbeat write below. Unexpected errors are
+    # surfaced to stderr (the service manager picks them up) and
+    # counted as failures in the summary.
+    raw_outcomes = await asyncio.gather(*tasks, return_exceptions=True) if tasks else []
+    outcomes: list[_Outcome] = []
+    for o in raw_outcomes:
+        if isinstance(o, BaseException):
+            import sys
+            print(
+                f"monitor check raised during run_once: {o!r}",
+                file=sys.stderr,
+            )
+            outcomes.append(_Outcome(status="fail", transitioned=False))
+        else:
+            outcomes.append(o)
 
+    # Heartbeat must land even on a partially-failed cycle -- otherwise
+    # a single bad row wedges the operator's liveness signal.
     mon_dal.set_heartbeat(conn, now=now)
 
     executed = len(outcomes)
@@ -157,13 +175,20 @@ def _resolve_config(
     if check.kind == "icmp":
         return {}
     if check.kind == "tcp":
-        return {"port": check.port} if check.port is not None else {}
-    if check.kind == "http":
         config: dict[str, Any] = {}
+        if check.port is not None:
+            config["port"] = check.port
+        if check.timeout_seconds is not None:
+            config["timeout"] = check.timeout_seconds
+        return config
+    if check.kind == "http":
+        config = {}
         if check.port is not None:
             config["port"] = check.port
         if check.path is not None:
             config["path"] = check.path
+        if check.timeout_seconds is not None:
+            config["timeout"] = check.timeout_seconds
         return config
     if check.kind == "snmp_oid":
         snmp_auth = _resolve_credential(

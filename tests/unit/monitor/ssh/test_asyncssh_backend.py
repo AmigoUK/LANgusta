@@ -113,6 +113,47 @@ async def test_tofu_first_use_records_second_use_pins(
 
 
 @pytest.mark.asyncio
+async def test_tofu_record_failure_surfaces_in_result_stderr(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Wave-3 TEST-C-008. If the first-use TOFU key recording fails
+    (e.g. `export_public_key` raises, filesystem is read-only, the
+    store refuses for a race-with-another-writer reason), the command
+    must surface that — not silently return the command's own success.
+    The next cycle is supposed to run through the pinned branch, which
+    can't happen if the record step failed silently."""
+    stub = _install_asyncssh_stub(monkeypatch)
+
+    from langusta.monitor.ssh.asyncssh_backend import AsyncsshBackend
+
+    class _BrokenServerKey:
+        def export_public_key(self, format_name: str = "openssh") -> bytes:
+            raise RuntimeError("simulated export failure")
+
+    def fake_connect(**_: Any) -> _FakeConn:
+        return _FakeConn(server_key=_BrokenServerKey())
+
+    stub.connect = fake_connect  # type: ignore[attr-defined]
+
+    known_hosts = tmp_path / "known_hosts"
+    backend = AsyncsshBackend(known_hosts_path=known_hosts)
+    result = await backend.run_command(
+        "10.1.2.3", port=22, username="u",
+        auth=SshPasswordAuth(password="p"),
+        command="echo", timeout=5.0,
+    )
+
+    assert result.exit_code != 0, (
+        "TOFU record failure silently returned the command's exit code "
+        "— second-cycle pin path will never be taken"
+    )
+    stderr = (result.stderr or "").lower()
+    assert "tofu" in stderr or "host key" in stderr, (
+        f"stderr should name the TOFU failure; got {result.stderr!r}"
+    )
+
+
+@pytest.mark.asyncio
 async def test_tofu_mismatched_key_on_pinned_host_is_not_silently_accepted(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
