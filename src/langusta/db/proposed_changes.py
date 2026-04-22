@@ -17,9 +17,39 @@ from datetime import datetime
 from langusta.core.provenance import FieldProvenance
 from langusta.db import timeline as tl_dal
 
+# Defence-in-depth: only these asset columns may ever be steered by a
+# proposed_changes resolution UPDATE. Covers everything scannable (scanner
+# path, mirrors writer._SCANNABLE_FIELDS) plus human-only metadata that
+# a future importer could legitimately propose. Excludes id, first_seen,
+# last_seen, source — those are managed by the runtime and must never be
+# targetable from a proposal row.
+_UPDATABLE_ASSET_FIELDS = frozenset({
+    # Scannable — scanner may propose these.
+    "hostname",
+    "primary_ip",
+    "vendor",
+    "detected_os",
+    "device_type",
+    # Manual metadata — legitimate targets for human/importer proposals.
+    "description",
+    "location",
+    "owner",
+    "management_url",
+    "criticality",
+})
+
 
 class AlreadyResolvedError(RuntimeError):
     """accept/reject/edit_override called on a row already resolved."""
+
+
+def _check_updatable_field(field: str) -> None:
+    if field not in _UPDATABLE_ASSET_FIELDS:
+        raise ValueError(
+            f"proposed_changes resolution refuses non-allowlisted field "
+            f"{field!r}; expected one of "
+            f"{sorted(_UPDATABLE_ASSET_FIELDS)}"
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -154,6 +184,7 @@ def accept(conn: sqlite3.Connection, pc_id: int, *, now: datetime) -> None:
     The human has explicitly chosen to let the scanner's observation win.
     """
     row = _assert_open(conn, pc_id)
+    _check_updatable_field(row.field)
     now_iso = _iso(now)
     # Apply the proposed value to the asset.
     conn.execute(
@@ -213,6 +244,7 @@ def edit_override(
     """User chose a third option — neither current nor proposed. Applied with
     MANUAL provenance so subsequent scans treat it as protected again."""
     row = _assert_open(conn, pc_id)
+    _check_updatable_field(row.field)
     now_iso = _iso(now)
     conn.execute(
         f"UPDATE assets SET {row.field} = ?, last_seen = ? WHERE id = ?",
