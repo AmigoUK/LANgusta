@@ -385,6 +385,100 @@ def test_migrate_disables_foreign_keys_around_pending_chain(
 
 
 # ---------------------------------------------------------------------------
+# Migration atomicity (Wave-3 TEST-C-001)
+# ---------------------------------------------------------------------------
+
+
+class _InjectedCrashError(RuntimeError):
+    """Marker exception used to simulate a crash mid-migration."""
+
+
+def test_migrate_is_atomic_when_interrupted_between_ddl_and_bookkeeping(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If a process dies after a migration's DDL runs but before its row
+    is recorded in `_migrations`, a subsequent migrate() run must still
+    succeed -- not blow up re-running the DDL against a schema that
+    already carries it."""
+    import langusta.db.migrate as mig
+
+    # Fabricated 2-step chain: step 1 always succeeds, step 2 is the one
+    # we sabotage. Both create tables that would fail re-create if the
+    # runner weren't atomic. The plan's "bring the DB up to step 1, then
+    # ship step 2" pattern is mirrored by first migrating against a dir
+    # that only has step 1, then adding step 2 and migrating again.
+    step1_only_dir = tmp_path / "migrations_step1"
+    step1_only_dir.mkdir()
+    _write_fake_migration(
+        step1_only_dir, 1,
+        "CREATE TABLE step1 (id INTEGER PRIMARY KEY, name TEXT NOT NULL);",
+    )
+
+    migs_dir = tmp_path / "migrations_full"
+    migs_dir.mkdir()
+    _write_fake_migration(
+        migs_dir, 1,
+        "CREATE TABLE step1 (id INTEGER PRIMARY KEY, name TEXT NOT NULL);",
+    )
+    _write_fake_migration(
+        migs_dir, 2,
+        "CREATE TABLE step2 (id INTEGER PRIMARY KEY, note TEXT);\n"
+        "CREATE INDEX idx_step2_note ON step2(note);",
+    )
+
+    db = tmp_path / "x.sqlite"
+    # First bring DB up to step 1 so only step 2 is pending against the
+    # full dir.
+    mig.migrate(db, migrations_dir=step1_only_dir)
+    with connect(db) as conn:
+        assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == 1
+
+    # Sabotage: intercept datetime.now() in the migrate namespace. It is
+    # evaluated once per pending migration to build the _migrations INSERT
+    # row -- which is the gap TEST-C-001 is targeting (between DDL and
+    # bookkeeping). Raising there simulates a kill -9 at that exact point.
+    from datetime import UTC
+    from datetime import datetime as real_datetime
+
+    class _Tripwire:
+        @staticmethod
+        def now(tz: object = None) -> object:
+            raise _InjectedCrashError(
+                "simulated crash between DDL and bookkeeping INSERT"
+            )
+
+    # Keep UTC etc. available; only override `.now`.
+    class _Shim:
+        now = _Tripwire.now
+
+    monkeypatch.setattr(mig, "datetime", _Shim)
+
+    with pytest.raises(_InjectedCrashError):
+        mig.migrate(db, migrations_dir=migs_dir)
+
+    # Remove the tripwire and retry -- the runner must recover cleanly.
+    monkeypatch.setattr(mig, "datetime", real_datetime)
+    mig.migrate(db, migrations_dir=migs_dir)
+
+    # Both tables must exist and the version must be 2.
+    with connect(db) as conn:
+        version = int(conn.execute("PRAGMA user_version").fetchone()[0])
+        step2_exists = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='step2'"
+        ).fetchone() is not None
+        index_exists = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='index' "
+            "AND name='idx_step2_note'"
+        ).fetchone() is not None
+    assert version == 2, f"user_version stuck at {version} after recovery"
+    assert step2_exists, "step2 table missing after recovery"
+    assert index_exists, "idx_step2_note missing after recovery"
+
+    # sentinel not used; suppress linter
+    del UTC
+
+
+# ---------------------------------------------------------------------------
 # _write_backup — connection lifecycle (Wave-3 TEST-M-003)
 # ---------------------------------------------------------------------------
 
