@@ -157,13 +157,20 @@ def _resolve_config(
     if check.kind == "icmp":
         return {}
     if check.kind == "tcp":
-        return {"port": check.port} if check.port is not None else {}
-    if check.kind == "http":
         config: dict[str, Any] = {}
+        if check.port is not None:
+            config["port"] = check.port
+        if check.timeout_seconds is not None:
+            config["timeout"] = check.timeout_seconds
+        return config
+    if check.kind == "http":
+        config = {}
         if check.port is not None:
             config["port"] = check.port
         if check.path is not None:
             config["path"] = check.path
+        if check.timeout_seconds is not None:
+            config["timeout"] = check.timeout_seconds
         return config
     if check.kind == "snmp_oid":
         snmp_auth = _resolve_credential(

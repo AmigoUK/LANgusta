@@ -314,3 +314,39 @@ async def test_snmp_oid_without_vault_records_fail(tmp_path: Path) -> None:
     assert row["status"] == "fail"
     assert "vault" in (row["detail"] or "").lower()
     assert len(recording.configs) == 0
+
+
+# ---------------------------------------------------------------------------
+# Wave-3 TEST-C-004 — timeout_seconds propagates to tcp/http check config
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("kind", ["tcp", "http"])
+def test_resolve_config_passes_timeout_to_tcp_and_http(kind: str) -> None:
+    """`MonitoringCheck.timeout_seconds` is persisted per-check but
+    `_resolve_config` previously returned it only for snmp_oid and
+    ssh_command. tcp and http dropped the value on the floor, leaving
+    those kinds stuck on the Http/Tcp backends' hard-coded 5s default.
+    Wave-3 finding C-004 (single-lens correctness, medium)."""
+    from langusta.db.monitoring import MonitoringCheck
+    from langusta.monitor.runner import _resolve_config
+
+    check = MonitoringCheck(
+        id=1, asset_id=1, kind=kind,
+        target=None, port=80, path="/" if kind == "http" else None,
+        interval_seconds=60, enabled=True,
+        created_at=NOW, last_run_at=None, last_status=None,
+        timeout_seconds=0.25,
+    )
+    cfg = _resolve_config(
+        check,
+        conn=None,  # type: ignore[arg-type]
+        vault=None,
+        snmp_client=None,
+        ssh_client=None,
+        cred_cache={},
+    )
+    assert cfg.get("timeout") == 0.25, (
+        f"{kind}: timeout_seconds={check.timeout_seconds} dropped by "
+        f"_resolve_config; resolved config={cfg}"
+    )
