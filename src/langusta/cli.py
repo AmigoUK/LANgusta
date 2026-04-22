@@ -863,6 +863,15 @@ def monitor_daemon(
     vault = _unlock_vault() if needs_vault else None
 
     pid_path = paths.monitor_pid_path()
+    existing = daemon_control.read_pid_file(pid_path)
+    if existing.alive:
+        typer.echo(
+            f"error: monitor already running (pid {existing.pid}); "
+            f"run `langusta monitor stop` first",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+    # Stale PID files are safe to overwrite; a living daemon is not.
     daemon_control.write_pid_file(pid_path, os.getpid())
     typer.echo(f"langusta monitor daemon — cycle every {interval}s (Ctrl+C to stop)")
     logfile = paths.langusta_home() / "notifications.log"

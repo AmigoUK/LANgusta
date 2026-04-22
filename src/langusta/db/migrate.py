@@ -21,6 +21,7 @@ from __future__ import annotations
 import hashlib
 import re
 import sqlite3
+from contextlib import closing
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from importlib.resources import files
@@ -181,7 +182,12 @@ def _write_backup(src_path: Path, backups_dir: Path, current_version: int) -> Pa
     ts = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     dst = backups_dir / f"db-pre-migration-{current_version:04d}-{ts}.sqlite"
     # Use SQLite's online backup API — safe while the DB is in use (WAL-friendly).
-    with sqlite3.connect(str(src_path)) as src, sqlite3.connect(str(dst)) as dst_conn:
+    # `with sqlite3.connect(...)` only commits; it does not close. Wrap with
+    # `closing` so the fds are released when this returns.
+    with (
+        closing(sqlite3.connect(str(src_path))) as src,
+        closing(sqlite3.connect(str(dst))) as dst_conn,
+    ):
         src.backup(dst_conn)
     return dst
 
@@ -249,17 +255,36 @@ def migrate(
             if path is not None and path.exists():
                 _write_backup(path, backups_dir, current)
 
-        for mig in pending:
-            conn.executescript(mig.sql)
-            conn.execute(
-                "INSERT INTO _migrations (id, description, checksum, applied_at) "
-                "VALUES (?, ?, ?, ?)",
-                (
-                    mig.id,
-                    mig.description,
-                    mig.checksum,
-                    datetime.now(UTC).isoformat(timespec="seconds"),
-                ),
-            )
-            # Advance user_version atomically with the migration.
-            conn.execute(f"PRAGMA user_version = {mig.id}")
+        # Disable FK enforcement across the pending chain. SQLite performs an
+        # implicit DELETE FROM on DROP TABLE when foreign_keys=ON, which
+        # cascades to any child rows — that silently destroys data on any
+        # rebuild-via-swap migration (007 is the in-tree example). The
+        # canonical 12-step "other kinds of schema change" recipe calls for
+        # FK off around the rebuild; we do it once around the whole chain so
+        # individual migrations don't have to repeat the pragma dance.
+        # `foreign_key_check` after the chain catches any genuine orphans the
+        # migrations themselves produced.
+        conn.execute("PRAGMA foreign_keys = OFF")
+        try:
+            for mig in pending:
+                conn.executescript(mig.sql)
+                conn.execute(
+                    "INSERT INTO _migrations (id, description, checksum, applied_at) "
+                    "VALUES (?, ?, ?, ?)",
+                    (
+                        mig.id,
+                        mig.description,
+                        mig.checksum,
+                        datetime.now(UTC).isoformat(timespec="seconds"),
+                    ),
+                )
+                # Advance user_version atomically with the migration.
+                conn.execute(f"PRAGMA user_version = {mig.id}")
+            violations = conn.execute("PRAGMA foreign_key_check").fetchall()
+            if violations:
+                raise RuntimeError(
+                    "migration chain left dangling foreign-key references: "
+                    f"{[tuple(v) for v in violations]}"
+                )
+        finally:
+            conn.execute("PRAGMA foreign_keys = ON")

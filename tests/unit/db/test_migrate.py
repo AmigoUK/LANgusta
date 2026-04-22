@@ -107,6 +107,96 @@ def test_migrate_007_preserves_existing_monitoring_rows(tmp_path: Path) -> None:
     assert check.credential_id is None
 
 
+def test_migrate_007_preserves_check_results_across_table_rebuild(
+    tmp_path: Path,
+) -> None:
+    """007 rebuilds monitoring_checks via DROP + RENAME. Historic
+    `check_results` rows FK-reference `monitoring_checks(id)` with
+    `ON DELETE CASCADE` — under `PRAGMA foreign_keys=ON` (which `connect()`
+    always sets) a DROP TABLE on the parent performs an implicit
+    `DELETE FROM` and cascades to the children. This test is the ADR-0005
+    no-data-loss guard: every `check_results` row must survive the rebuild
+    and still resolve to the rebuilt `monitoring_checks` row.
+
+    Settles the Wave-2 open uncertainty on migration 007 (finding C-002).
+    """
+    from datetime import UTC, datetime
+
+    from langusta.db import assets as assets_dal
+
+    db = tmp_path / "mig.sqlite"
+    migrations = discover_migrations()
+    pre = [m for m in migrations if m.id < 7]
+    assert pre, "expected migrations numbered < 7"
+
+    now = datetime(2026, 4, 20, 12, 0, 0, tzinfo=UTC)
+
+    with connect(db) as conn:
+        conn.execute(
+            "CREATE TABLE _migrations (id INTEGER PRIMARY KEY, description TEXT NOT NULL, "
+            "checksum TEXT NOT NULL, applied_at TEXT NOT NULL)"
+        )
+        for m in pre:
+            conn.executescript(m.sql)
+            conn.execute(
+                "INSERT INTO _migrations (id, description, checksum, applied_at) "
+                "VALUES (?, ?, ?, ?)",
+                (m.id, m.description, m.checksum, now.isoformat()),
+            )
+            conn.execute(f"PRAGMA user_version = {m.id}")
+
+        aid = assets_dal.insert_manual(
+            conn, hostname="r", primary_ip="10.0.0.1", now=now,
+        )
+        row = conn.execute(
+            "INSERT INTO monitoring_checks ("
+            "asset_id, kind, target, port, path, interval_seconds, enabled, created_at"
+            ") VALUES (?, 'http', NULL, 80, '/', 60, 1, ?) RETURNING id",
+            (aid, now.isoformat()),
+        ).fetchone()
+        cid = int(row[0])
+
+        # Three child rows — these are the rows ADR-0005 says must survive.
+        for i in range(3):
+            conn.execute(
+                "INSERT INTO check_results "
+                "(check_id, asset_id, status, latency_ms, detail, recorded_at) "
+                "VALUES (?, ?, 'ok', 1.0, NULL, ?)",
+                (cid, aid, now.replace(minute=i).isoformat()),
+            )
+        pre_count = int(
+            conn.execute("SELECT COUNT(*) FROM check_results").fetchone()[0]
+        )
+
+    assert pre_count == 3, "arrange: three child rows seeded"
+
+    # Act — apply migration 007 on top of existing data.
+    migrate(db)
+
+    # Assert — every check_result survived AND still resolves to the
+    # rebuilt monitoring_checks row. If either assertion fails we have
+    # real data loss on the 0.1 → 0.2 upgrade path.
+    with connect(db) as conn:
+        post_count = int(
+            conn.execute("SELECT COUNT(*) FROM check_results").fetchone()[0]
+        )
+        orphaned = int(
+            conn.execute(
+                "SELECT COUNT(*) FROM check_results cr "
+                "LEFT JOIN monitoring_checks mc ON mc.id = cr.check_id "
+                "WHERE mc.id IS NULL"
+            ).fetchone()[0]
+        )
+
+    assert post_count == pre_count, (
+        f"check_results row count changed across 007 rebuild: "
+        f"{pre_count} -> {post_count} (data loss; ADR-0005 violation)"
+    )
+    assert orphaned == 0, (
+        f"{orphaned} check_results rows orphaned after rebuild"
+    )
+
+
 def test_migrate_fresh_db_applies_all_migrations(tmp_path: Path) -> None:
     db = tmp_path / "fresh.sqlite"
     migrate(db)
@@ -239,6 +329,52 @@ def test_migrate_refuses_when_applied_migration_checksum_changes(
         migrate(db)
     assert "checksum" in str(excinfo.value).lower()
     assert "1" in str(excinfo.value)
+
+
+# ---------------------------------------------------------------------------
+# _write_backup — connection lifecycle (Wave-3 TEST-M-003)
+# ---------------------------------------------------------------------------
+
+
+def test_write_backup_closes_both_sqlite_connections(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`sqlite3.connect` used as a context manager commits-but-does-not-close.
+    `_write_backup` opens two connections per call; without explicit .close()
+    each call leaks two file descriptors. This asserts every connection the
+    helper creates is closed by the time it returns.
+    """
+    from langusta.db import migrate as migrate_module
+
+    # Seed a DB with data first, so _write_backup has something to snapshot,
+    # without any of the seeding connections polluting our tracker.
+    db = tmp_path / "src.sqlite"
+    migrate(db)
+    with connect(db) as conn:
+        conn.execute("CREATE TABLE t (id INTEGER)")
+        conn.execute("INSERT INTO t VALUES (1)")
+
+    tracked: list[sqlite3.Connection] = []
+    real_connect = sqlite3.connect
+
+    def tracking_connect(*args: object, **kwargs: object) -> sqlite3.Connection:
+        conn = real_connect(*args, **kwargs)  # type: ignore[arg-type]
+        tracked.append(conn)
+        return conn
+
+    monkeypatch.setattr(migrate_module.sqlite3, "connect", tracking_connect)
+
+    migrate_module._write_backup(db, tmp_path / "backups", current_version=1)
+
+    assert len(tracked) == 2, (
+        f"expected _write_backup to open 2 sqlite connections, got {len(tracked)}"
+    )
+    for idx, leaked in enumerate(tracked):
+        with pytest.raises(sqlite3.ProgrammingError):
+            leaked.execute("SELECT 1")
+        # Quiet the test output; a genuinely-closed connection is idempotent.
+        leaked.close()
+        del idx
 
 
 def test_migrate_refuses_when_db_ahead_of_code(tmp_path: Path) -> None:

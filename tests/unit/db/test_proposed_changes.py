@@ -245,3 +245,64 @@ def test_accept_on_resolved_proposal_raises(seeded_db) -> None:
         pc_dal.accept(conn, pc_id, now=NOW)
         with pytest.raises(pc_dal.AlreadyResolvedError):
             pc_dal.accept(conn, pc_id, now=NOW)
+
+
+# ---------------------------------------------------------------------------
+# Field-name allowlist (Wave-3 TEST-M-002, defence-in-depth)
+# ---------------------------------------------------------------------------
+
+
+def _insert_raw_proposed_change(
+    db: Path, *, asset_id: int, field: str, proposed_value: str
+) -> int:
+    """Bypass pc_dal.insert and put a row in directly — models a future
+    writer or attacker-controlled import that slipped a non-allowlisted
+    field past the writer-side guard."""
+    with connect(db) as conn:
+        row = conn.execute(
+            "INSERT INTO proposed_changes ("
+            "asset_id, field, current_value, current_provenance, "
+            "proposed_value, observed_at, scan_id"
+            ") VALUES (?, ?, NULL, 'manual', ?, ?, NULL) RETURNING id",
+            (asset_id, field, proposed_value, NOW.isoformat(timespec="seconds")),
+        ).fetchone()
+        return int(row[0])
+
+
+def test_accept_refuses_non_allowlisted_field(seeded_db) -> None:
+    """`accept()` must validate row.field against an allowlist before
+    interpolating it into UPDATE SQL. The insert-time writer guard is not
+    sufficient — a later writer, import, or adversary who writes directly
+    to the table must not be able to steer the UPDATE.
+    """
+    db, aid, _sid = seeded_db
+    pc_id = _insert_raw_proposed_change(
+        db, asset_id=aid, field="id", proposed_value="99",
+    )
+    with pytest.raises(ValueError, match="field"), connect(db) as conn:
+        pc_dal.accept(conn, pc_id, now=NOW)
+
+
+def test_edit_override_refuses_non_allowlisted_field(seeded_db) -> None:
+    """Same guard on the `edit_override()` path."""
+    db, aid, _sid = seeded_db
+    pc_id = _insert_raw_proposed_change(
+        db, asset_id=aid, field="source", proposed_value="x",
+    )
+    with pytest.raises(ValueError, match="field"), connect(db) as conn:
+        pc_dal.edit_override(conn, pc_id, value="x", now=NOW)
+
+
+def test_accept_allows_every_scannable_field(seeded_db) -> None:
+    """Regression sentinel — the allowlist must stay aligned with
+    `writer._SCANNABLE_FIELDS`; if a new scannable field is added, accept()
+    must still take it."""
+    from langusta.db.writer import _SCANNABLE_FIELDS
+
+    db, aid, _sid = seeded_db
+    for field in _SCANNABLE_FIELDS:
+        pc_id = _insert_raw_proposed_change(
+            db, asset_id=aid, field=field, proposed_value="new-value",
+        )
+        with connect(db) as conn:
+            pc_dal.accept(conn, pc_id, now=NOW)  # must not raise

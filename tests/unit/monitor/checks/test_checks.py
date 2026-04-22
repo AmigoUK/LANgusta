@@ -113,7 +113,7 @@ async def test_http_200_returns_ok(monkeypatch: pytest.MonkeyPatch) -> None:
         status_code = 200
         elapsed = _ElapsedDummy(millis=42.0)
 
-    async def fake_get(url, *, timeout):
+    async def fake_get(url, *, timeout, verify):
         return _Resp()
 
     monkeypatch.setattr("langusta.monitor.checks.http._http_get", fake_get)
@@ -128,7 +128,7 @@ async def test_http_500_returns_fail(monkeypatch: pytest.MonkeyPatch) -> None:
         status_code = 503
         elapsed = _ElapsedDummy(millis=5.0)
 
-    async def fake_get(url, *, timeout):
+    async def fake_get(url, *, timeout, verify):
         return _Resp()
 
     monkeypatch.setattr("langusta.monitor.checks.http._http_get", fake_get)
@@ -139,7 +139,7 @@ async def test_http_500_returns_fail(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.mark.asyncio
 async def test_http_connection_error_returns_fail(monkeypatch: pytest.MonkeyPatch) -> None:
-    async def fake_get(url, *, timeout):
+    async def fake_get(url, *, timeout, verify):
         raise ConnectionError("refused")
 
     monkeypatch.setattr("langusta.monitor.checks.http._http_get", fake_get)
@@ -155,7 +155,7 @@ async def test_http_builds_url_with_port_and_path(monkeypatch: pytest.MonkeyPatc
         status_code = 200
         elapsed = _ElapsedDummy(millis=1.0)
 
-    async def fake_get(url, *, timeout):
+    async def fake_get(url, *, timeout, verify):
         seen["url"] = url
         return _Resp()
 
@@ -172,7 +172,7 @@ async def test_http_uses_plain_http_for_port_80(monkeypatch: pytest.MonkeyPatch)
         status_code = 200
         elapsed = _ElapsedDummy(millis=1.0)
 
-    async def fake_get(url, *, timeout):
+    async def fake_get(url, *, timeout, verify):
         seen["url"] = url
         return _Resp()
 
