@@ -21,6 +21,7 @@ from __future__ import annotations
 import hashlib
 import re
 import sqlite3
+from contextlib import closing
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from importlib.resources import files
@@ -181,7 +182,12 @@ def _write_backup(src_path: Path, backups_dir: Path, current_version: int) -> Pa
     ts = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     dst = backups_dir / f"db-pre-migration-{current_version:04d}-{ts}.sqlite"
     # Use SQLite's online backup API — safe while the DB is in use (WAL-friendly).
-    with sqlite3.connect(str(src_path)) as src, sqlite3.connect(str(dst)) as dst_conn:
+    # `with sqlite3.connect(...)` only commits; it does not close. Wrap with
+    # `closing` so the fds are released when this returns.
+    with (
+        closing(sqlite3.connect(str(src_path))) as src,
+        closing(sqlite3.connect(str(dst))) as dst_conn,
+    ):
         src.backup(dst_conn)
     return dst
 

@@ -12,6 +12,7 @@ Spec: docs/specs/02-tech-stack-and-architecture.md §9.
 from __future__ import annotations
 
 import sqlite3
+from contextlib import closing
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -83,7 +84,12 @@ def write(
     # just return the existing one.
     if dst.exists():
         return dst
-    with sqlite3.connect(str(src_path)) as src, sqlite3.connect(str(dst)) as out:
+    # `with sqlite3.connect(...)` only commits; it does not close. Wrap with
+    # `closing` so the fds are released when this returns.
+    with (
+        closing(sqlite3.connect(str(src_path))) as src,
+        closing(sqlite3.connect(str(dst))) as out,
+    ):
         src.backup(out)
     return dst
 

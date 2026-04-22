@@ -331,6 +331,52 @@ def test_migrate_refuses_when_applied_migration_checksum_changes(
     assert "1" in str(excinfo.value)
 
 
+# ---------------------------------------------------------------------------
+# _write_backup — connection lifecycle (Wave-3 TEST-M-003)
+# ---------------------------------------------------------------------------
+
+
+def test_write_backup_closes_both_sqlite_connections(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`sqlite3.connect` used as a context manager commits-but-does-not-close.
+    `_write_backup` opens two connections per call; without explicit .close()
+    each call leaks two file descriptors. This asserts every connection the
+    helper creates is closed by the time it returns.
+    """
+    from langusta.db import migrate as migrate_module
+
+    # Seed a DB with data first, so _write_backup has something to snapshot,
+    # without any of the seeding connections polluting our tracker.
+    db = tmp_path / "src.sqlite"
+    migrate(db)
+    with connect(db) as conn:
+        conn.execute("CREATE TABLE t (id INTEGER)")
+        conn.execute("INSERT INTO t VALUES (1)")
+
+    tracked: list[sqlite3.Connection] = []
+    real_connect = sqlite3.connect
+
+    def tracking_connect(*args: object, **kwargs: object) -> sqlite3.Connection:
+        conn = real_connect(*args, **kwargs)  # type: ignore[arg-type]
+        tracked.append(conn)
+        return conn
+
+    monkeypatch.setattr(migrate_module.sqlite3, "connect", tracking_connect)
+
+    migrate_module._write_backup(db, tmp_path / "backups", current_version=1)
+
+    assert len(tracked) == 2, (
+        f"expected _write_backup to open 2 sqlite connections, got {len(tracked)}"
+    )
+    for idx, leaked in enumerate(tracked):
+        with pytest.raises(sqlite3.ProgrammingError):
+            leaked.execute("SELECT 1")
+        # Quiet the test output; a genuinely-closed connection is idempotent.
+        leaked.close()
+        del idx
+
+
 def test_migrate_refuses_when_db_ahead_of_code(tmp_path: Path) -> None:
     """A DB at user_version N+1 with no code at that level = the binary was
     downgraded. Refuse rather than guess."""
