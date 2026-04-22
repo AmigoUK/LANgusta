@@ -256,3 +256,42 @@ def test_scan_with_snmp_unknown_label(home_with_snmp: Path) -> None:
     )
     assert r.exit_code != 0
     assert "nope" in (r.stdout + (r.stderr or ""))
+
+
+# ---------------------------------------------------------------------------
+# Wave-3 TEST-T-016 — SocketPermissionError surfaces the capability hint
+# ---------------------------------------------------------------------------
+
+
+def test_scan_socket_permission_error_surfaces_ping_group_range_hint(
+    home: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Unprivileged ICMP on Linux requires `net.ipv4.ping_group_range`
+    to cover the runner's GID — a niche kernel knob that trips up
+    first-time users. The CLI has a tailored hint for this case; this
+    test exercises the rendering end-to-end so a future refactor of
+    the CLI's try/except for SocketPermissionError can't silently drop
+    or rename the hint."""
+    from icmplib.exceptions import SocketPermissionError
+
+    async def boom(*_args: object, **_kwargs: object) -> None:
+        raise SocketPermissionError("raw socket requires CAP_NET_RAW")
+
+    # `cli.scan` imports `run_scan` from this module at call time, so
+    # patching the module attribute here is what the CLI actually sees.
+    monkeypatch.setattr("langusta.scan.orchestrator.run_scan", boom)
+
+    r = runner.invoke(
+        app, ["scan", "10.0.0.0/30"], env={"HOME": str(home)},
+    )
+
+    assert r.exit_code == 1, f"stdout={r.stdout!r} stderr={r.stderr!r}"
+    combined = (r.stdout or "") + (r.stderr or "")
+    assert "ping_group_range" in combined, (
+        "SocketPermissionError hint must name net.ipv4.ping_group_range "
+        "so the user knows what to set; otherwise they get a bare "
+        "traceback"
+    )
+    assert "sysctl" in combined, (
+        "hint must name the `sysctl` command the user should run"
+    )
