@@ -77,6 +77,25 @@ def test_is_process_alive_for_current_process() -> None:
     assert is_process_alive(os.getpid()) is True
 
 
+def test_write_pid_file_does_not_follow_symlink(tmp_path: Path) -> None:
+    """Wave-3 TEST-S-006. If an attacker with local filesystem access
+    plants a symlink at `~/.langusta/monitor.pid` pointing at some
+    user-owned file elsewhere, write_pid_file() must NOT follow the
+    symlink and clobber the target. The pid-file location is
+    predictable and attacker-controllable via /tmp scoreboards."""
+    target = tmp_path / "innocent.txt"
+    target.write_text("IMPORTANT-USER-FILE", encoding="utf-8")
+    link = tmp_path / "monitor.pid"
+    os.symlink(target, link)
+
+    with pytest.raises((OSError, FileExistsError)):
+        write_pid_file(link, 1234)
+
+    assert target.read_text(encoding="utf-8") == "IMPORTANT-USER-FILE", (
+        "write_pid_file followed the symlink and clobbered the target"
+    )
+
+
 def test_stop_via_pid_file_noop_when_file_missing(tmp_path: Path) -> None:
     state = stop_via_pid_file(tmp_path / "absent.pid")
     assert state.pid is None

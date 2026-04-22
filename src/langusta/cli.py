@@ -934,12 +934,24 @@ def monitor_start(
     log_path = paths.monitor_log_path()
     log_path.parent.mkdir(parents=True, exist_ok=True)
     log = log_path.open("a", encoding="utf-8")
+    # Pass env= explicitly and strip LANGUSTA_MASTER_PASSWORD. Inheriting
+    # the parent's env would leave the master password visible in the
+    # daemon's /proc/<pid>/environ to any local process that can stat
+    # that pid. Cred-backed checks (snmp_oid, ssh_command) require the
+    # vault on the daemon side; users who need those should deploy via
+    # `langusta monitor install-service` (ADR-0002) and let the service
+    # manager provide the password through its own credential mechanism.
+    child_env = {
+        k: v for k, v in os.environ.items()
+        if k != "LANGUSTA_MASTER_PASSWORD"
+    }
     proc = subprocess.Popen(
         [sys.executable, "-m", "langusta", "monitor", "daemon",
          "--foreground", "--interval", str(interval)],
         stdout=log, stderr=subprocess.STDOUT,
         stdin=subprocess.DEVNULL,
         start_new_session=True,
+        env=child_env,
     )
     # The spawned process writes its own PID into the file when it
     # reaches `monitor_daemon` above; record the subprocess PID here as

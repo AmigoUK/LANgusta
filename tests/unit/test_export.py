@@ -264,6 +264,34 @@ def test_import_refuses_attacker_controlled_column_name(tmp_path: Path) -> None:
         import_from_dict(conn, evil_dump)
 
 
+@pytest.mark.parametrize("bogus", [
+    0,
+    -1,
+    None,
+    "not-an-int",
+    999999,
+    999998,
+])
+def test_import_refuses_mismatched_schema_version(
+    tmp_path: Path, bogus: object,
+) -> None:
+    """Wave-3 TEST-T-003. `import_from_dict` must reject any dump whose
+    `schema_version` doesn't equal the binary's `latest_schema_version`.
+    Parametrised across nonsense (None/str), too-low, too-high, and
+    one-off values. The current code raises `SchemaMismatch` on the
+    match-failure path; all of these should land in it or in the
+    SchemaMismatch-parent `ImportRefused`."""
+    db = tmp_path / "d.sqlite"
+    migrate(db)
+    dump = {
+        "export_format_version": EXPORT_FORMAT_VERSION,
+        "schema_version": bogus,
+        "tables": {},
+    }
+    with connect(db) as conn, pytest.raises((SchemaMismatch, ImportRefused)):
+        import_from_dict(conn, dump)
+
+
 def test_import_refuses_unknown_column_even_if_name_is_plain(
     tmp_path: Path,
 ) -> None:

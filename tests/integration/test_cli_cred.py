@@ -191,3 +191,47 @@ def test_cred_add_snmp_v3_rejects_bad_protocol(tmp_path: Path) -> None:
     }
     r = runner.invoke(app, ["cred", "add", "--label", "bad", "--kind", "snmp_v3"], env=env)
     assert r.exit_code != 0
+
+
+# ---------------------------------------------------------------------------
+# Wave-3 TEST-T-011 — wrong master password exits cleanly
+# ---------------------------------------------------------------------------
+
+
+def test_cred_add_with_wrong_master_password_exits_1_cleanly(
+    tmp_path: Path,
+) -> None:
+    """Invoking a vault-gated command with the wrong
+    LANGUSTA_MASTER_PASSWORD must exit 1 with a clear 'incorrect'
+    message — no traceback, no cryptography-library stack trace,
+    no silent success."""
+    h = _home(tmp_path)
+    _init(h)
+
+    wrong_env = {
+        "HOME": str(h),
+        "LANGUSTA_MASTER_PASSWORD": "not-the-correct-password-xxxxxxxx",
+    }
+    r = runner.invoke(
+        app,
+        ["cred", "add", "--label", "api", "--kind", "api_token"],
+        env=wrong_env,
+        input="secret-token\nsecret-token\n",
+    )
+
+    assert r.exit_code == 1, (
+        f"expected exit 1, got {r.exit_code}. stdout={r.stdout!r} "
+        f"stderr={r.stderr!r}"
+    )
+    combined = (r.stdout or "") + (r.stderr or "")
+    assert (
+        "incorrect" in combined.lower() or "wrong" in combined.lower()
+    ), f"no user-friendly error in output: {combined!r}"
+    # Regression guard: no raw traceback / exception class name leaks
+    # from the cryptography layer.
+    assert "Traceback" not in combined, (
+        f"raw traceback leaked on wrong-password path: {combined!r}"
+    )
+    assert "InvalidTag" not in combined, (
+        f"cryptography InvalidTag bubbled to the user: {combined!r}"
+    )

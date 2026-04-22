@@ -104,9 +104,27 @@ async def send_webhook(config: dict, event: MonitorEvent) -> bool:
     try:
         status = await _http_post(url, _event_to_dict(event), timeout=timeout)
     except Exception as exc:
-        print(f"webhook sink to {url!r} failed: {exc}", file=sys.stderr)
+        # Slack/Discord-style webhooks encode the auth token in the URL
+        # path; never echo the full URL on failure. Log the origin only
+        # (scheme + host[:port]) so the operator can still identify the
+        # failing sink without leaking the secret.
+        print(
+            f"webhook sink to {_origin_of(url)} failed: {exc}",
+            file=sys.stderr,
+        )
         return False
     return 200 <= status < 300
+
+
+def _origin_of(url: str) -> str:
+    """Return scheme://netloc from `url`, dropping path/query/fragment.
+    Safe to log in failure paths where the path may contain a token."""
+    from urllib.parse import urlsplit
+
+    parts = urlsplit(url)
+    if not parts.scheme or not parts.netloc:
+        return "<invalid-url>"
+    return f"{parts.scheme}://{parts.netloc}"
 
 
 async def send_smtp(config: dict, event: MonitorEvent) -> bool:

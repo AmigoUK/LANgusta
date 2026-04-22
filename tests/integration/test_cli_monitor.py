@@ -220,6 +220,40 @@ class _FakePopenProc:
         self.pid = pid
 
 
+def test_monitor_start_does_not_leak_master_password_to_daemon_env(
+    home: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """LANGUSTA_MASTER_PASSWORD must not be inherited into the detached
+    daemon's environment. The daemon doesn't need it -- it unlocks the
+    vault at start via `_unlock_vault()` (which re-reads the env var
+    inside its own process) -- and leaving it in /proc/<pid>/environ
+    exposes it to any local process that can stat that pid. Wave-3
+    finding S-005."""
+    import subprocess
+
+    captured: dict[str, object] = {}
+
+    def spy_popen(*_args: object, **kwargs: object) -> _FakePopenProc:
+        captured.update(kwargs)
+        return _FakePopenProc(pid=4242)
+
+    monkeypatch.setattr(subprocess, "Popen", spy_popen)
+
+    env = {**_env(home), "LANGUSTA_MASTER_PASSWORD": "super-secret-pw"}
+    r = runner.invoke(app, ["monitor", "start"], env=env)
+    assert r.exit_code == 0, r.stdout
+
+    passed_env = captured.get("env")
+    assert isinstance(passed_env, dict), (
+        "monitor start must pass env= explicitly to Popen — otherwise "
+        "the subprocess inherits the caller's entire environment, "
+        f"including LANGUSTA_MASTER_PASSWORD. Got env={passed_env!r}"
+    )
+    assert "LANGUSTA_MASTER_PASSWORD" not in passed_env, (
+        "master password leaked into daemon environment"
+    )
+
+
 def test_monitor_start_writes_pid_file_on_first_invocation(
     home: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:

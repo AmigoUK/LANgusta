@@ -79,3 +79,44 @@ def test_vault_across_setup_unlock_is_functionally_equivalent(db: Path) -> None:
     with connect(db) as conn:
         v_unlock = unlock(conn, password="match-password-foo", _for_tests=True)
     assert v_unlock.decrypt(envelope) == b"data"
+
+
+# ---------------------------------------------------------------------------
+# Wave-3 TEST-T-013 — unlock rejects tampered-but-decryptable verifier
+# ---------------------------------------------------------------------------
+
+
+def test_unlock_rejects_tampered_verifier_that_decrypts(db: Path) -> None:
+    """If an attacker with DB write access replaces the stored verifier
+    with their own envelope (encrypting something-other-than-the-
+    expected marker under the same vault), `unlock()` must still refuse.
+    Covers the `marker != _VERIFIER_PLAINTEXT` branch — the "decrypts
+    cleanly but marker mismatches" path the second
+    `WrongMasterPassword("... marker mismatch")` exists for."""
+    import base64
+
+    from langusta.crypto import master_password as mp
+    from langusta.db import meta as meta_dal
+
+    with connect(db) as conn:
+        vault = setup(
+            conn, password="legit-password-xxxxxxxxxx",
+            now=NOW, _for_tests=True,
+        )
+
+        # Valid envelope over a DIFFERENT plaintext using the same vault:
+        # decrypts cleanly but the marker check must catch it.
+        tampered = vault.encrypt(b"NOT-THE-EXPECTED-VERIFIER-MARKER")
+        meta_dal.set_value(
+            conn,
+            mp._VERIFIER_KEY,
+            base64.b64encode(tampered.nonce).decode("ascii")
+            + ":"
+            + base64.b64encode(tampered.ciphertext).decode("ascii"),
+            now=NOW,
+        )
+
+    with connect(db) as conn, pytest.raises(
+        WrongMasterPassword, match="marker",
+    ):
+        unlock(conn, password="legit-password-xxxxxxxxxx", _for_tests=True)
