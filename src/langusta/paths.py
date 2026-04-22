@@ -12,9 +12,20 @@ from pathlib import Path
 
 
 def langusta_home() -> Path:
-    """Return `$LANGUSTA_HOME` if set, else `~/.langusta`."""
+    """Return `$LANGUSTA_HOME` if set, else `~/.langusta`.
+
+    `LANGUSTA_HOME` must be an absolute path. Rejecting relative paths
+    up front means a badly-set env (e.g. `LANGUSTA_HOME=.` in a script
+    invoked from an unexpected CWD) can't silently create the
+    LANgusta tree in the current directory instead of somewhere safe.
+    """
     override = os.environ.get("LANGUSTA_HOME")
     if override:
+        if not os.path.isabs(override):
+            raise ValueError(
+                f"LANGUSTA_HOME must be an absolute path; got "
+                f"{override!r}"
+            )
         return Path(override)
     return Path(os.path.expanduser("~")) / ".langusta"
 

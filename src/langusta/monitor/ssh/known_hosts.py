@@ -11,6 +11,8 @@ text editor or prepopulate it from their own `~/.ssh/known_hosts`.
 
 from __future__ import annotations
 
+import contextlib
+import os
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -99,6 +101,13 @@ class KnownHostsStore:
         self._ensure_parent()
         with self._path.open("a", encoding="utf-8") as f:
             f.write(entry.to_openssh_line())
+        # Force 0600 regardless of the process umask — the file carries
+        # TOFU host-key pins that a local attacker could overwrite or
+        # pre-seed to bypass verification on the first connect.
+        # FileNotFoundError means we raced with a cleanup; the next
+        # write will re-chmod anyway.
+        with contextlib.suppress(FileNotFoundError):
+            os.chmod(self._path, 0o600)
 
     def verify(self, host: str, port: int, key_type: str, key_b64: str) -> None:
         """Raise KeyMismatchError if the presented key doesn't match the pin."""

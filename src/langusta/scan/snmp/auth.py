@@ -10,10 +10,21 @@ protocol name raises immediately rather than failing later inside pysnmp.
 
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass
 
 ALLOWED_AUTH = frozenset({"NONE", "MD5", "SHA", "SHA-224", "SHA-256", "SHA-384", "SHA-512"})
 ALLOWED_PRIV = frozenset({"NONE", "DES", "3DES", "AES-128", "AES-192", "AES-256"})
+
+# Protocols the SNMPv3 USM spec still allows but which are cryptographically
+# broken (MD5 collision, DES key-size). We warn the operator at credential-
+# construction time so they know what they're opting into.
+_DEPRECATED_AUTH = frozenset({"MD5"})
+_DEPRECATED_PRIV = frozenset({"DES", "3DES"})
+
+
+class WeakSnmpv3ProtocolWarning(UserWarning):
+    """Emitted when a constructed SnmpV3Auth carries MD5, DES, or 3DES."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -44,6 +55,20 @@ class SnmpV3Auth:
             raise ValueError("priv_passphrase is required when priv_protocol != 'NONE'")
         if self.priv_protocol != "NONE" and self.auth_protocol == "NONE":
             raise ValueError("priv requires auth (USM forbids noAuthPriv)")
+        if self.auth_protocol in _DEPRECATED_AUTH:
+            warnings.warn(
+                f"SNMPv3 auth_protocol {self.auth_protocol!r} is "
+                "cryptographically broken; prefer SHA or SHA-256+",
+                WeakSnmpv3ProtocolWarning,
+                stacklevel=2,
+            )
+        if self.priv_protocol in _DEPRECATED_PRIV:
+            warnings.warn(
+                f"SNMPv3 priv_protocol {self.priv_protocol!r} is "
+                "cryptographically broken; prefer AES-128 or AES-256",
+                WeakSnmpv3ProtocolWarning,
+                stacklevel=2,
+            )
 
 
 SnmpAuth = SnmpV2cAuth | SnmpV3Auth

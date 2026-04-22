@@ -122,6 +122,33 @@ def test_entries_skips_comment_lines(tmp_path: Path) -> None:
     assert entries[0].host == "10.0.0.1"
 
 
+def test_add_writes_file_with_0o600_regardless_of_umask(
+    tmp_path: Path,
+) -> None:
+    """Wave-3 S-010. Even if the daemon's process umask is a loose
+    default (e.g. 0o022), the TOFU store must land on disk as 0o600 so
+    a local attacker can't overwrite or pre-seed pins."""
+    import os
+    import stat
+    import sys
+
+    if sys.platform == "win32":  # pragma: no cover — POSIX-only check
+        return
+
+    # Force a loose umask for the duration of this test.
+    previous = os.umask(0o022)
+    try:
+        s = _store(tmp_path)
+        s.add(HostKeyEntry("10.0.0.1", 22, ED25519, KEY_A))
+        mode = stat.S_IMODE(s.path.stat().st_mode)
+        assert mode == 0o600, (
+            f"known_hosts created at mode {oct(mode)} under umask 022; "
+            "expected 0o600 from an explicit chmod"
+        )
+    finally:
+        os.umask(previous)
+
+
 def test_entries_tolerates_blank_lines(tmp_path: Path) -> None:
     path = tmp_path / ".langusta" / "known_hosts"
     path.parent.mkdir(parents=True)
