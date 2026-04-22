@@ -8,6 +8,10 @@ Pre-1.0 versions may introduce breaking changes on any minor bump.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Migration runner no longer cascade-deletes FK-referenced child rows during rebuild-via-swap migrations.** SQLite performs an implicit `DELETE FROM` on `DROP TABLE` when `foreign_keys=ON`, which cascaded through `check_results.check_id ON DELETE CASCADE` in migration 007 and silently destroyed all historic check results on the 0.1 → 0.2 upgrade path. The runner now disables FK enforcement across the pending-migration chain (SQLite's canonical "12-step schema surgery" recipe), runs `PRAGMA foreign_key_check` afterwards to catch any genuine orphans a migration produced, and re-enables FKs. Settles Wave-2 post-review open uncertainty **C-002** against `src/langusta/db/migrate.py` and `migrations/007_monitor_snmp_ssh.sql`; regression test at `tests/unit/db/test_migrate.py::test_migrate_007_preserves_check_results_across_table_rebuild`. Users who already upgraded to 0.2.0 and lost `check_results` history should restore from their pre-migration backup at `~/.langusta/backups/db-pre-migration-*.sqlite`.
+
 ## [0.2.0] — 2026-04-19
 
 Stable 0.2.0. Consolidates rc1..rc6 into one minor release. No code change beyond the version bump.

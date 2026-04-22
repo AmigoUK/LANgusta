@@ -249,17 +249,36 @@ def migrate(
             if path is not None and path.exists():
                 _write_backup(path, backups_dir, current)
 
-        for mig in pending:
-            conn.executescript(mig.sql)
-            conn.execute(
-                "INSERT INTO _migrations (id, description, checksum, applied_at) "
-                "VALUES (?, ?, ?, ?)",
-                (
-                    mig.id,
-                    mig.description,
-                    mig.checksum,
-                    datetime.now(UTC).isoformat(timespec="seconds"),
-                ),
-            )
-            # Advance user_version atomically with the migration.
-            conn.execute(f"PRAGMA user_version = {mig.id}")
+        # Disable FK enforcement across the pending chain. SQLite performs an
+        # implicit DELETE FROM on DROP TABLE when foreign_keys=ON, which
+        # cascades to any child rows — that silently destroys data on any
+        # rebuild-via-swap migration (007 is the in-tree example). The
+        # canonical 12-step "other kinds of schema change" recipe calls for
+        # FK off around the rebuild; we do it once around the whole chain so
+        # individual migrations don't have to repeat the pragma dance.
+        # `foreign_key_check` after the chain catches any genuine orphans the
+        # migrations themselves produced.
+        conn.execute("PRAGMA foreign_keys = OFF")
+        try:
+            for mig in pending:
+                conn.executescript(mig.sql)
+                conn.execute(
+                    "INSERT INTO _migrations (id, description, checksum, applied_at) "
+                    "VALUES (?, ?, ?, ?)",
+                    (
+                        mig.id,
+                        mig.description,
+                        mig.checksum,
+                        datetime.now(UTC).isoformat(timespec="seconds"),
+                    ),
+                )
+                # Advance user_version atomically with the migration.
+                conn.execute(f"PRAGMA user_version = {mig.id}")
+            violations = conn.execute("PRAGMA foreign_key_check").fetchall()
+            if violations:
+                raise RuntimeError(
+                    "migration chain left dangling foreign-key references: "
+                    f"{[tuple(v) for v in violations]}"
+                )
+        finally:
+            conn.execute("PRAGMA foreign_keys = ON")
