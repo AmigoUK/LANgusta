@@ -55,4 +55,4 @@ def tmp_langusta_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterat
     if langusta_dir.exists():
         for child in langusta_dir.rglob("*"):
             if child.is_file():
-                os.chmod(child, 0o644)
+                os.chmod(child, 0o700)

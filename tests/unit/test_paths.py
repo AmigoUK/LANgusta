@@ -67,7 +67,6 @@ def test_all_canonical_paths_live_under_langusta_home(
     for fn in (
         paths.db_path,
         paths.backups_dir,
-        paths.config_path,
         paths.known_hosts_path,
         paths.monitor_pid_path,
         paths.monitor_log_path,

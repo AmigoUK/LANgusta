@@ -121,3 +121,22 @@ def test_create_rejects_invalid_kind(db: Path, vault: Vault) -> None:
         cred_dal.create(
             conn, label="bad", kind="nope", secret=b"x", vault=vault, now=NOW,
         )
+
+
+def test_get_by_id_returns_credential(db: Path, vault: Vault) -> None:
+    with connect(db) as conn:
+        cred_id = cred_dal.create(
+            conn, label="by-id-test", kind="snmp_v2c",
+            secret=b"s3cret", vault=vault, now=NOW,
+        )
+        found = cred_dal.get_by_id(conn, cred_id)
+    assert found is not None
+    assert found.id == cred_id
+    assert found.label == "by-id-test"
+    assert found.kind == "snmp_v2c"
+    assert found.created_at == NOW
+
+
+def test_get_by_id_unknown_returns_none(db: Path) -> None:
+    with connect(db) as conn:
+        assert cred_dal.get_by_id(conn, 999) is None

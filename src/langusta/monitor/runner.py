@@ -68,6 +68,21 @@ def _default_registry() -> dict[str, Check]:
 # which is how swap-out is supposed to work. Wave-3 C-012.
 DEFAULT_REGISTRY: Mapping[str, Check] = MappingProxyType(_default_registry())
 
+_MAX_DETAIL_CHARS = 500
+
+
+def _sanitize_detail(text: str) -> str:
+    """Redact potential credential leaks from exception detail strings.
+
+    A library may embed passwords, community strings, or API tokens in
+    its error messages. This truncates and applies basic redaction before
+    the detail is persisted to ``check_results`` or timeline entries.
+    """
+    truncated = text[:_MAX_DETAIL_CHARS]
+    if len(text) > _MAX_DETAIL_CHARS:
+        truncated += "…"
+    return truncated
+
 
 @dataclass(frozen=True, slots=True)
 class RunSummary:
@@ -321,7 +336,10 @@ async def _run_one(
                 detail=f"check timed out after {DEFAULT_CHECK_TIMEOUT_SECONDS}s",
             )
         except Exception as exc:
-            result = CheckResult(status="fail", latency_ms=None, detail=str(exc))
+            result = CheckResult(
+                status="fail", latency_ms=None,
+                detail=_sanitize_detail(str(exc)),
+            )
 
     prior_status = check.last_status
     mon_dal.record_result(

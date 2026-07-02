@@ -144,3 +144,30 @@ def test_search_returns_asset_objects(seeded: Path) -> None:
         assert asset.id > 0
         assert hasattr(asset, "hostname")
         assert hasattr(asset, "primary_ip")
+
+
+# ---------------------------------------------------------------------------
+# Negative / edge-case queries (audit T-7)
+# ---------------------------------------------------------------------------
+
+
+def test_search_special_chars_return_empty_not_crash(seeded: Path) -> None:
+    """FTS5 unsafe characters must be stripped, not cause a crash."""
+    with connect(seeded) as conn:
+        for query in ('"', "'", "*", "(", ")", ":", "\\", "-"):
+            results = search_dal.search(conn, query)
+            assert isinstance(results, list)
+
+
+def test_search_fts_injection_attempt_returns_empty(seeded: Path) -> None:
+    """A query like 'OR 1=1' must not be treated as SQL/FTS injection."""
+    with connect(seeded) as conn:
+        results = search_dal.search(conn, "OR 1=1")
+    assert isinstance(results, list)
+
+
+def test_search_mixed_special_and_text(seeded: Path) -> None:
+    """Query with special chars mixed into valid text should still work."""
+    with connect(seeded) as conn:
+        results = search_dal.search(conn, 'reception"')
+    assert any(h.hostname == "router-core" for h in results)

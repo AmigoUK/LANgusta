@@ -140,8 +140,7 @@ def test_monitor_run_executes_due_checks(
     )
     r = runner.invoke(app, ["monitor", "run"], env=_env(home))
     assert r.exit_code == 0, r.stdout
-    # Output mentions the one executed check.
-    assert "1" in r.stdout or "executed" in r.stdout.lower()
+    assert "executed" in r.stdout.lower()
 
 
 def test_monitor_run_timeline_shows_failure_on_first_fail(

@@ -79,8 +79,7 @@ def test_add_prints_new_asset_id(tmp_path: Path) -> None:
     home = _init_home(tmp_path)
     r = _run("add", "--hostname", "x", home=home)
     assert r.exit_code == 0
-    # Some form of "id=1" or "added asset #1" must be in the output.
-    assert "1" in r.stdout
+    assert "added asset id=" in r.stdout
 
 
 def test_add_without_any_fields_is_a_user_error(tmp_path: Path) -> None:

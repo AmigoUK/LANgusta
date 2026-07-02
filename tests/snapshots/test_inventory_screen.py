@@ -1,7 +1,7 @@
 """Textual snapshot tests for the inventory screen.
 
 Run with `--snapshot-update` when the UI intentionally changes, then commit
-the regenerated `.svg` under tests/snapshots/__snapshots__/.
+the regenerated `.raw` under tests/snapshots/__snapshots__/.
 """
 
 from __future__ import annotations
