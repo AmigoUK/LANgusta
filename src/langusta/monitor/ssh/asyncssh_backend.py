@@ -1,14 +1,20 @@
 """Real SSH backend via asyncssh with TOFU host-key pinning.
 
 On first connection to a given `host:port`, the server's host key is
-recorded in `~/.langusta/known_hosts`. Subsequent connections verify
-against the recorded key — a change raises and fails the check rather
-than silently accepting the new key.
+recorded in `~/.langusta/known_hosts` via a credential-free key-exchange
+phase. No password or private key is sent until the host key is pinned,
+so an active MITM on first use cannot capture credentials. Subsequent
+connections verify against the recorded key — a change raises and fails
+the check rather than silently accepting the new key.
+
+Audit S-3: TOFU first-use now splits into a key-record phase (no auth)
+and an auth phase (pinned known_hosts).
 """
 
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import time
 from pathlib import Path
 
@@ -48,18 +54,44 @@ class AsyncsshBackend:
                 elapsed_ms=None,
             )
 
+        # TOFU: on first use, record the host key via a credential-free
+        # key-exchange phase BEFORE sending any passwords or keys. This
+        # prevents a MITM from capturing credentials on the initial
+        # connection (audit S-3).
+        if not self._store.contains(host, port):
+            start = time.monotonic()
+            try:
+                async with asyncio.timeout(timeout):
+                    await self._tofu_record_key(
+                        asyncssh, host, port, username,
+                    )
+            except TimeoutError:
+                elapsed = (time.monotonic() - start) * 1000.0
+                return SshResult(
+                    exit_code=-1, stdout="", stderr="timeout during TOFU key exchange",
+                    elapsed_ms=elapsed,
+                )
+            except Exception as exc:
+                elapsed = (time.monotonic() - start) * 1000.0
+                return SshResult(
+                    exit_code=-1, stdout="",
+                    stderr=f"TOFU key exchange failed: {exc}",
+                    elapsed_ms=elapsed,
+                )
+            if not self._store.contains(host, port):
+                elapsed = (time.monotonic() - start) * 1000.0
+                return SshResult(
+                    exit_code=-1, stdout="",
+                    stderr="TOFU: host key was not recorded",
+                    elapsed_ms=elapsed,
+                )
+
         connect_kwargs: dict[str, object] = {
             "host": host,
             "port": port,
             "username": username,
+            "known_hosts": str(self._store.path),
         }
-        if self._store.contains(host, port):
-            # Pinned host — let asyncssh verify against our known_hosts file.
-            connect_kwargs["known_hosts"] = str(self._store.path)
-        else:
-            # First use — connect without verification so we can record the
-            # key. Subsequent connections will go through the pinned path.
-            connect_kwargs["known_hosts"] = None
 
         if isinstance(auth, SshKeyAuth):
             try:
@@ -84,21 +116,6 @@ class AsyncsshBackend:
         try:
             async with asyncio.timeout(timeout):
                 async with asyncssh.connect(**connect_kwargs) as conn:
-                    if not self._store.contains(host, port):
-                        # TOFU failure must surface: if we can't record the
-                        # key now, the next cycle won't flip to the pinned
-                        # branch and we'd be stuck in first-use-unverified
-                        # mode forever. Short-circuit with a clear error
-                        # rather than silently returning the command exit.
-                        try:
-                            self._record_host_key(conn, host, port)
-                        except Exception as exc:
-                            elapsed = (time.monotonic() - start) * 1000.0
-                            return SshResult(
-                                exit_code=-1, stdout="",
-                                stderr=f"TOFU host-key record failed: {exc}",
-                                elapsed_ms=elapsed,
-                            )
                     proc = await conn.run(command, check=False)
         except TimeoutError:
             elapsed = (time.monotonic() - start) * 1000.0
@@ -119,37 +136,54 @@ class AsyncsshBackend:
             elapsed_ms=elapsed,
         )
 
-    def _record_host_key(self, conn, host: str, port: int) -> None:
-        """Extract the negotiated host key and append to the TOFU store.
+    async def _tofu_record_key(
+        self, asyncssh, host: str, port: int, username: str,
+    ) -> None:
+        """Phase 1 of TOFU: establish a key-exchange-only connection with
+        NO credentials, capture the server host key, and disconnect before
+        authentication begins.
 
-        Raises on any step that prevents the key from being recorded so
-        the caller can surface TOFU failure in the SshResult. The only
-        silent path is a concurrent-writer race against `store.add`,
-        which we tolerate because the other writer has already produced
-        an identical pin.
+        Uses asyncssh's SSHClient callback so the key is captured in
+        ``connection_made`` (which fires after key exchange but before
+        auth) and the connection is immediately disconnected.
+
+        Raises ``RuntimeError`` if the server did not present a host key.
         """
-        server_key = conn.get_server_host_key()
-        if server_key is None:
-            raise RuntimeError("asyncssh returned no server host key")
+        captured: list = []
+
+        class _KeyGrabber(asyncssh.SSHClient):
+            def connection_made(self, conn):
+                key = conn.get_server_host_key()
+                if key is not None:
+                    captured.append(key)
+                conn.disconnect(
+                    asyncssh.DISC_BY_APPLICATION, "TOFU key record only",
+                )
+
+        with contextlib.suppress(Exception):
+            await asyncssh.create_connection(
+                _KeyGrabber, host, port=port,
+                username=username,
+                known_hosts=None,
+                agent_path=None,
+            )
+
+        if not captured or captured[0] is None:
+            raise RuntimeError("server did not present a host key")
+
+        server_key = captured[0]
         openssh_bytes = server_key.export_public_key(format_name="openssh")
         parts = openssh_bytes.decode("utf-8", errors="replace").split()
         if len(parts) < 2:
             raise RuntimeError(
-                "asyncssh host key export returned unexpected shape: "
-                f"{openssh_bytes!r}"
+                f"host key export returned unexpected shape: {openssh_bytes!r}"
             )
-        key_type, key_b64 = parts[0], parts[1]
         entry = HostKeyEntry(
-            host=host, port=port, key_type=key_type, key_b64=key_b64,
+            host=host, port=port, key_type=parts[0], key_b64=parts[1],
         )
         try:
             self._store.add(entry)
         except Exception:
-            # Race with a concurrent monitor cycle — the other writer
-            # wins; verification against the just-written entry happens
-            # next run. We only tolerate this case; genuine add failures
-            # (e.g. disk full, permission denied) still raise up through
-            # the caller below.
             if not self._store.contains(host, port):
                 raise
             return
