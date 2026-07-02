@@ -24,6 +24,10 @@ class SnmpCredentialError(ValueError):
     """The named SNMP credential is missing or the wrong kind."""
 
 
+class CredentialNotFoundError(SnmpCredentialError):
+    """No credential exists with the given label."""
+
+
 def resolve_snmp_credential(
     conn: sqlite3.Connection,
     *,
@@ -46,7 +50,7 @@ def resolve_snmp_credential(
         )
     info = cred_dal.get_by_label(conn, label)
     if info is None:
-        raise SnmpCredentialError(f"no credential with label {label!r}")
+        raise CredentialNotFoundError(f"no credential with label {label!r}")
     if info.kind not in {"snmp_v2c", "snmp_v3"}:
         raise SnmpCredentialError(
             f"credential {label!r} is {info.kind}, "

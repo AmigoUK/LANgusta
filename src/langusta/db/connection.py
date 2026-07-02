@@ -64,3 +64,17 @@ def connect(
         raise
     finally:
         conn.close()
+
+
+def database_path(conn: sqlite3.Connection) -> Path | None:
+    """Extract the on-disk path of the main database from a live connection.
+
+    Uses ``PRAGMA database_list`` — SQLite's documented introspection API
+    for attached databases. Moved here from the scan orchestrator so that
+    raw SQL (even a ``PRAGMA``) doesn't leak outside ``db/``.
+    """
+    for row in conn.execute("PRAGMA database_list").fetchall():
+        if row["name"] == "main":
+            file = row["file"]
+            return Path(file) if file else None
+    return None

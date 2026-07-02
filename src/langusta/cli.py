@@ -265,6 +265,7 @@ def scan(
 
     from langusta.scan.orchestrator import run_scan
     from langusta.scan.snmp.credentials import (
+        CredentialNotFoundError,
         SnmpCredentialError,
         resolve_snmp_credential,
     )
@@ -280,11 +281,12 @@ def scan(
                 snmp_auth, _ = resolve_snmp_credential(
                     conn, label=snmp, vault=vault,
                 )
+            except CredentialNotFoundError as exc:
+                typer.echo(f"error: {exc}", err=True)
+                raise typer.Exit(code=1) from exc
             except SnmpCredentialError as exc:
                 typer.echo(f"error: {exc}", err=True)
-                # Missing label → 1; wrong kind / malformed secret → 2.
-                code = 1 if "no credential" in str(exc) else 2
-                raise typer.Exit(code=code) from exc
+                raise typer.Exit(code=2) from exc
             except (ValueError, KeyError) as exc:
                 typer.echo(
                     f"error: malformed credential {snmp!r}: {exc}",
