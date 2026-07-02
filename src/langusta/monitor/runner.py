@@ -48,6 +48,7 @@ from langusta.scan.snmp.credentials import cred_to_snmp_auth
 from langusta.scan.snmp.pysnmp_backend import PysnmpBackend
 
 DEFAULT_MAX_CONCURRENCY = 32
+DEFAULT_CHECK_TIMEOUT_SECONDS = 30
 
 
 def _default_registry() -> dict[str, Check]:
@@ -300,7 +301,14 @@ async def _run_one(
 
     async with semaphore:
         try:
-            result: CheckResult = await impl.run(target=target, **config)
+            async with asyncio.timeout(DEFAULT_CHECK_TIMEOUT_SECONDS):
+                result: CheckResult = await impl.run(target=target, **config)
+        except TimeoutError:
+            result = CheckResult(
+                status="fail",
+                latency_ms=None,
+                detail=f"check timed out after {DEFAULT_CHECK_TIMEOUT_SECONDS}s",
+            )
         except Exception as exc:
             result = CheckResult(status="fail", latency_ms=None, detail=str(exc))
 

@@ -16,6 +16,7 @@ Returns exit code 0 if clean, 1 if violations found.
 from __future__ import annotations
 
 import ast
+import re
 import sys
 from pathlib import Path
 
@@ -146,6 +147,34 @@ def check_raw_sql_location(src_root: Path) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
+# Check 4 — timeline DAL is insert-only
+# ---------------------------------------------------------------------------
+
+
+_MUTATIVE_FN_RE = re.compile(r"def\s+(update_|delete_|remove_|modify_|edit_)\w+")
+
+
+def check_timeline_dal_is_insert_only(src_root: Path) -> list[str]:
+    """Flag UPDATE/DELETE/modify function definitions in db/timeline.py.
+
+    The immutable-timeline invariant is enforced by SQL triggers, but nothing
+    structural prevents a contributor from adding a ``def update_entry()`` to
+    the DAL. This lint catches that at CI time.
+    """
+    timeline = src_root / "db" / "timeline.py"
+    if not timeline.is_file():
+        return []
+    violations: list[str] = []
+    text = timeline.read_text(encoding="utf-8")
+    for match in _MUTATIVE_FN_RE.finditer(text):
+        violations.append(
+            f"{timeline}: mutative function defined on insert-only DAL: "
+            f"{match.group()}"
+        )
+    return violations
+
+
+# ---------------------------------------------------------------------------
 # Aggregate + CLI
 # ---------------------------------------------------------------------------
 
@@ -155,6 +184,7 @@ def run_all_checks(src_root: Path) -> list[str]:
         *check_core_is_stdlib_only(src_root),
         *check_platform_dispatch(src_root),
         *check_raw_sql_location(src_root),
+        *check_timeline_dal_is_insert_only(src_root),
     ]
 
 

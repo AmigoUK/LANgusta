@@ -27,7 +27,7 @@ from langusta.db import monitoring as mon_dal
 from langusta.db import notifications as notif_dal
 from langusta.db import proposed_changes as pc_dal
 from langusta.db.connection import connect
-from langusta.db.migrate import latest_schema_version, migrate
+from langusta.db.migrate import assert_schema_current, latest_schema_version, migrate
 from langusta.monitor import daemon_control
 from langusta.platform import get_backend
 
@@ -914,6 +914,10 @@ def monitor_daemon(
             err=True,
         )
         raise typer.Exit(code=2)
+
+    # Refuse to start if the DB schema lags behind the binary — prevents
+    # a stale daemon from silently corrupting a post-upgrade DB.
+    assert_schema_current(paths.db_path())
 
     # Unlock the vault once up-front; the daemon holds it in memory for the
     # life of the process. Only required when cred-backed checks are

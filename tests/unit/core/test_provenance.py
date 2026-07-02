@@ -167,14 +167,14 @@ def test_property_manual_fields_never_overwritten(
     incoming: dict[str, str],
 ) -> None:
     """The load-bearing invariant: for ANY state x ANY observation,
-    every MANUAL-provenance field's value remains exactly as it was."""
+    MANUAL-provenance fields NEVER appear in the applied dict."""
     applied, _ = merge_scan_result(existing, incoming, now=NOW)
     for field_name, prior in existing.items():
-        # Either not in applied (preserved) OR in applied but value unchanged
-        # (same-value observations may refresh timestamps — see separate test).
-        if prior.provenance is FieldProvenance.MANUAL and field_name in applied:
-            assert applied[field_name].value == prior.value
-            assert applied[field_name].provenance is FieldProvenance.MANUAL
+        if prior.provenance is FieldProvenance.MANUAL:
+            assert field_name not in applied, (
+                f"MANUAL field {field_name!r} leaked into applied — "
+                f"invariant violated"
+            )
 
 
 @given(existing=existing_state(), incoming=incoming_observations())
@@ -184,8 +184,11 @@ def test_property_imported_fields_never_overwritten_by_scan(
 ) -> None:
     applied, _ = merge_scan_result(existing, incoming, now=NOW)
     for field_name, prior in existing.items():
-        if prior.provenance is FieldProvenance.IMPORTED and field_name in applied:
-            assert applied[field_name].value == prior.value
+        if prior.provenance is FieldProvenance.IMPORTED:
+            assert field_name not in applied, (
+                f"IMPORTED field {field_name!r} leaked into applied — "
+                f"invariant violated"
+            )
 
 
 @given(existing=existing_state(), incoming=incoming_observations())

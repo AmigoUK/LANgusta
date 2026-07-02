@@ -297,7 +297,7 @@ def test_migrate_writes_pre_migration_backup_even_without_explicit_kwarg(
     )
     migrate(db, migrations_dir=fake_migs)
 
-    snaps = list(paths.backups_dir().glob("db-pre-migration-*.sqlite"))
+    snaps = list(paths.backups_dir().glob("db-*-pre-migration-*.sqlite"))
     assert snaps, (
         f"expected a pre-migration snapshot under {paths.backups_dir()} "
         "even though migrate() was called without backups_dir"
@@ -332,7 +332,7 @@ def test_migrate_writes_pre_migration_backup_when_db_has_data(tmp_path: Path) ->
     migrate(db, migrations_dir=fake_migs, backups_dir=backups)
 
     assert backups.exists() and backups.is_dir()
-    backup_files = list(backups.glob("db-pre-migration-*.sqlite"))
+    backup_files = list(backups.glob("db-*-pre-migration-*.sqlite"))
     assert backup_files, "expected at least one pre-migration backup"
     # Backup contains the pre-migration data at the pre-migration schema.
     with sqlite3.connect(str(backup_files[0])) as b:

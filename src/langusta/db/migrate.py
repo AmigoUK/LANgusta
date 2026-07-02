@@ -137,6 +137,21 @@ def current_schema_version(db_path: DbPath) -> int:
         return int(conn.execute("PRAGMA user_version").fetchone()[0])
 
 
+def assert_schema_current(db_path: DbPath) -> None:
+    """Raise RuntimeError if the DB schema lags behind the binary.
+
+    Callers should invoke this before any write operation or at process
+    startup (daemon, TUI) to catch stale schemas after `uv tool upgrade`.
+    """
+    current = current_schema_version(db_path)
+    latest = latest_schema_version()
+    if current < latest:
+        raise RuntimeError(
+            f"database schema version {current} is behind the binary's "
+            f"latest migration ({latest}); run `langusta init` to migrate"
+        )
+
+
 def _applied_migrations(conn: sqlite3.Connection) -> dict[int, str]:
     """Return {id: checksum} for migrations recorded in `_migrations`.
 
@@ -193,7 +208,9 @@ def _has_user_data(conn: sqlite3.Connection) -> bool:
 def _write_backup(src_path: Path, backups_dir: Path, current_version: int) -> Path:
     backups_dir.mkdir(parents=True, exist_ok=True)
     ts = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
-    dst = backups_dir / f"db-pre-migration-{current_version:04d}-{ts}.sqlite"
+    # Timestamp-first naming so backup.py's _parse_stamp extracts the date
+    # correctly (it takes the first hyphen-delimited segment after the prefix).
+    dst = backups_dir / f"db-{ts}-pre-migration-{current_version:04d}.sqlite"
     # Use SQLite's online backup API — safe while the DB is in use (WAL-friendly).
     # `with sqlite3.connect(...)` only commits; it does not close. Wrap with
     # `closing` so the fds are released when this returns.
@@ -302,6 +319,17 @@ def migrate(
                 try:
                     for stmt in _split_statements(mig.sql):
                         conn.execute(stmt)
+                    # Check FK integrity BEFORE committing this migration.
+                    # Running it post-commit (as the old code did) left
+                    # orphans undetectable after user_version advanced.
+                    violations = conn.execute(
+                        "PRAGMA foreign_key_check"
+                    ).fetchall()
+                    if violations:
+                        raise RuntimeError(
+                            f"migration {mig.id} produced dangling FK "
+                            f"references: {[tuple(v) for v in violations]}"
+                        )
                     conn.execute(
                         "INSERT INTO _migrations "
                         "(id, description, checksum, applied_at) "
@@ -319,12 +347,6 @@ def migrate(
                 except BaseException:
                     conn.execute("ROLLBACK")
                     raise
-            violations = conn.execute("PRAGMA foreign_key_check").fetchall()
-            if violations:
-                raise RuntimeError(
-                    "migration chain left dangling foreign-key references: "
-                    f"{[tuple(v) for v in violations]}"
-                )
         finally:
             conn.isolation_level = saved_isolation
             conn.execute("PRAGMA foreign_keys = ON")

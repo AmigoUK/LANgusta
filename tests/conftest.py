@@ -28,13 +28,13 @@ def _offline_scan_enrichments(monkeypatch: pytest.MonkeyPatch) -> None:
         return {}
 
     monkeypatch.setattr(
-        "langusta.scan.orchestrator.resolve_many", empty_rdns, raising=False,
+        "langusta.scan.orchestrator.resolve_many", empty_rdns, raising=True,
     )
     monkeypatch.setattr(
-        "langusta.scan.orchestrator.probe_ports_many", empty_tcp, raising=False,
+        "langusta.scan.orchestrator.probe_ports_many", empty_tcp, raising=True,
     )
     monkeypatch.setattr(
-        "langusta.scan.orchestrator.mdns_discover", empty_mdns, raising=False,
+        "langusta.scan.orchestrator.mdns_discover", empty_mdns, raising=True,
     )
 
 

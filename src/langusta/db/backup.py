@@ -11,7 +11,9 @@ Spec: docs/specs/02-tech-stack-and-architecture.md §9.
 
 from __future__ import annotations
 
+import os
 import sqlite3
+import stat
 from contextlib import closing
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -78,6 +80,9 @@ def write(
                 return None
 
     backups_dir.mkdir(parents=True, exist_ok=True)
+    # Ensure the directory itself is private (belt-and-braces for the case
+    # where it was recreated outside `init`).
+    os.chmod(backups_dir, stat.S_IRWXU)
     stamp = now.strftime(_STAMP_FORMAT)
     dst = backups_dir / f"{_PREFIX}{stamp}{_SUFFIX}"
     # If a snapshot already exists at this exact stamp (second-resolution),
@@ -91,6 +96,7 @@ def write(
         closing(sqlite3.connect(str(dst))) as out,
     ):
         src.backup(out)
+    os.chmod(dst, stat.S_IRUSR | stat.S_IWUSR)  # 0600
     return dst
 
 
@@ -110,7 +116,7 @@ def verify(path: Path) -> bool:
     if not Path(path).exists():
         return False
     try:
-        with sqlite3.connect(str(path)) as conn:
+        with closing(sqlite3.connect(str(path))) as conn:
             row = conn.execute("PRAGMA integrity_check").fetchone()
     except sqlite3.DatabaseError:
         return False
