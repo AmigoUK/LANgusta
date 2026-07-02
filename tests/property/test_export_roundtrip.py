@@ -28,7 +28,7 @@ _NOW = datetime(2026, 4, 20, 12, 0, 0, tzinfo=UTC)
     hosts=st.lists(
         st.tuples(hostnames, ipv4),
         min_size=0, max_size=4,
-        unique_by=lambda pair: (pair[0], pair[1]),
+        unique_by=lambda pair: pair[1],  # unique IPs (UNIQUE constraint, mig 008)
     ),
 )
 def test_export_import_roundtrip_is_lossless_for_user_tables(

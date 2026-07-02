@@ -573,3 +573,88 @@ def test_migrate_refuses_when_db_ahead_of_code(tmp_path: Path) -> None:
     with pytest.raises(RuntimeError) as excinfo:
         migrate(db)
     assert "ahead" in str(excinfo.value).lower() or "downgrade" in str(excinfo.value).lower()
+
+
+# ---------------------------------------------------------------------------
+# Migration 008 — UNIQUE partial index on assets.primary_ip (D-3)
+# ---------------------------------------------------------------------------
+
+
+def test_migrate_008_enforces_unique_primary_ip(tmp_path: Path) -> None:
+    """After migration 008, inserting two assets with the same non-null
+    primary_ip must raise IntegrityError (defence-in-depth against TOCTOU
+    in the identity resolver)."""
+    from datetime import UTC, datetime
+
+    from langusta.db import assets as assets_dal
+
+    db = tmp_path / "uniq.sqlite"
+    migrate(db)
+    now = datetime(2026, 7, 2, 12, 0, 0, tzinfo=UTC)
+
+    with connect(db) as conn:
+        assets_dal.insert_manual(conn, hostname="a", primary_ip="10.0.0.5", now=now)
+        with pytest.raises(sqlite3.IntegrityError):
+            assets_dal.insert_manual(conn, hostname="b", primary_ip="10.0.0.5", now=now)
+
+
+def test_migrate_008_allows_null_primary_ip(tmp_path: Path) -> None:
+    """Partial index: NULL primary_ip values must not conflict."""
+    from datetime import UTC, datetime
+
+    from langusta.db import assets as assets_dal
+
+    db = tmp_path / "nulls.sqlite"
+    migrate(db)
+    now = datetime(2026, 7, 2, 12, 0, 0, tzinfo=UTC)
+
+    with connect(db) as conn:
+        assets_dal.insert_manual(conn, hostname="a", primary_ip=None, now=now)
+        assets_dal.insert_manual(conn, hostname="b", primary_ip=None, now=now)
+        count = conn.execute("SELECT COUNT(*) FROM assets").fetchone()[0]
+    assert count == 2
+
+
+def test_migrate_008_deduplicates_existing_ip_collisions(tmp_path: Path) -> None:
+    """If a DB has duplicate primary_ip values before migration 008, the
+    migration must null-out duplicates so the UNIQUE index can be created."""
+    from datetime import UTC, datetime
+
+    from langusta.db import assets as assets_dal
+
+    db = tmp_path / "dup.sqlite"
+    migrations = discover_migrations()
+    pre_008 = [m for m in migrations if m.id < 8]
+    now = datetime(2026, 7, 2, 12, 0, 0, tzinfo=UTC)
+
+    with connect(db) as conn:
+        conn.execute(
+            "CREATE TABLE _migrations (id INTEGER PRIMARY KEY, description TEXT NOT NULL, "
+            "checksum TEXT NOT NULL, applied_at TEXT NOT NULL)"
+        )
+        for m in pre_008:
+            conn.executescript(m.sql)
+            conn.execute(
+                "INSERT INTO _migrations (id, description, checksum, applied_at) "
+                "VALUES (?, ?, ?, ?)",
+                (m.id, m.description, m.checksum, now.isoformat()),
+            )
+            conn.execute(f"PRAGMA user_version = {m.id}")
+        # Insert two assets with the same IP (possible before the constraint).
+        assets_dal.insert_manual(conn, hostname="first", primary_ip="10.0.0.9", now=now)
+        assets_dal.insert_manual(
+            conn, hostname="second", primary_ip="10.0.0.9", now=now,
+        )
+
+    migrate(db)
+
+    with connect(db) as conn:
+        ips = [
+            row["primary_ip"]
+            for row in conn.execute(
+                "SELECT primary_ip FROM assets ORDER BY id"
+            ).fetchall()
+        ]
+    # One IP kept, the other nulled-out — no crash, no data loss.
+    assert ips.count("10.0.0.9") == 1
+    assert ips.count(None) == 1

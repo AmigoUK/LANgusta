@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -196,6 +197,26 @@ def add(
         except assets_dal.DuplicateMacError as exc:
             typer.echo(f"error: {exc}".lower(), err=True)
             raise typer.Exit(code=1) from exc
+        except sqlite3.IntegrityError as exc:
+            if not force or "primary_ip" not in str(exc):
+                raise
+            typer.echo(
+                f"warning: primary_ip {ip!r} is already bound to another asset; "
+                "inserting without an IP (--force).",
+                err=True,
+            )
+            asset_id = assets_dal.insert_manual(
+                conn,
+                hostname=hostname,
+                primary_ip=None,
+                mac=mac,
+                description=description,
+                location=location,
+                owner=owner,
+                management_url=management_url,
+                criticality=criticality,
+                now=now,
+            )
 
     typer.echo(f"added asset id={asset_id}")
 

@@ -152,6 +152,10 @@ def test_add_force_overrides_duplicate_ip_guard(tmp_path: Path) -> None:
         rows = assets_dal.list_all(conn)
     assert len(rows) == 2
     assert {r.hostname for r in rows} == {"router", "router-backup"}
+    # The UNIQUE constraint (migration 008) means --force with a duplicate
+    # IP inserts the second asset with a NULL primary_ip.
+    backup = next(r for r in rows if r.hostname == "router-backup")
+    assert backup.primary_ip is None
 
 
 # ---------------------------------------------------------------------------
