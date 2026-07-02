@@ -2,7 +2,7 @@
 
 > Local-first, self-hosted asset registry + network scanner + lightweight monitoring, for small IT teams and MSP technicians managing networks up to 250 devices.
 
-**Status:** 0.2.0 — beta. Consolidates the rc1..rc6 releases into a stable minor. v1 Must-Have from 0.1.0-rc1 plus: Lansweeper CSV + NetBox API importers, SNMP v3 authPriv, `snmp_oid` and `ssh_command` monitor check kinds, log / webhook / SMTP notification sinks, TUI heartbeat indicator, TUI monitor-config screen (press `m` on the inventory), opt-in vim keybindings preset (`LANGUSTA_KEYBINDINGS=vim`), TOFU SSH host-key pinning for `ssh_command`, and `monitor start` / `monitor stop` / enhanced `monitor status` backed by a PID file at `~/.langusta/monitor.pid`.
+**Status:** 0.2.1rc1 — beta. Consolidates the rc1..rc6 releases into a stable minor. v1 Must-Have from 0.1.0-rc1 plus: Lansweeper CSV + NetBox API importers, SNMP v3 authPriv, `snmp_oid` and `ssh_command` monitor check kinds, log / webhook / SMTP notification sinks, TUI heartbeat indicator, TUI monitor-config screen (press `m` on the inventory), opt-in vim keybindings preset (`LANGUSTA_KEYBINDINGS=vim`), TOFU SSH host-key pinning for `ssh_command`, and `monitor start` / `monitor stop` / enhanced `monitor status` backed by a PID file at `~/.langusta/monitor.pid`.
 
 ## What it does
 

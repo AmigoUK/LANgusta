@@ -1,6 +1,6 @@
 """Architectural boundary lints.
 
-Encodes three ADR decisions as mechanical checks:
+Encodes four ADR decisions as mechanical checks:
 
   1. `core/` imports only stdlib (ADR-0001: keeps the domain layer unit-
      testable without installing any package).
@@ -8,6 +8,16 @@ Encodes three ADR decisions as mechanical checks:
      dispatch point, no sprinkled OS checks across the codebase).
   3. Raw SQL strings live only in `db/` modules (ADR-0001: the DAL is the
      sole owner of SQL; other layers call DAL functions, they don't write SQL).
+  4. `db/timeline.py` defines no mutative functions (insert-only DAL).
+
+Known limitations (latent, not currently violated):
+  - The SQL check inspects only ast.Constant string nodes; it does not
+    catch f-strings, concatenation, or .format() outside db/.
+  - The platform check is a literal substring search for "sys.platform"
+    and "platform.system()"; it misses `from sys import platform`,
+    `from platform import system`, and `os.name`.
+  - The core check works only with absolute imports; relative imports
+    (`from .models import`) would false-positive.
 
 Run:   uv run python -m scripts.lint_boundaries [SRC_DIR]
 Returns exit code 0 if clean, 1 if violations found.

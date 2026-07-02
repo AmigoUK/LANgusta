@@ -9,6 +9,7 @@ path that upholds the scanner-proposes-human-disposes invariant.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import sqlite3
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -185,12 +186,14 @@ async def run_scan(
 
     # Post-scan backup (spec §9). Dedupe window of 1h prevents spam during
     # rapid scan cycles. Commit the current connection first so the backup
-    # picks up the scan's writes.
+    # picks up the scan's writes. A backup failure (disk full, etc.) must
+    # not crash the scan — the data is already committed.
     if backups_dir is not None:
         conn.commit()
         sqlite_path = _sqlite_path_for(conn)
         if sqlite_path is not None:
-            backup_mod.write(sqlite_path, backups_dir, now=end)
+            with contextlib.suppress(OSError):
+                backup_mod.write(sqlite_path, backups_dir, now=end)
 
     return ScanReport(
         scan_id=scan_id,

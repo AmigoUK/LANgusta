@@ -74,6 +74,20 @@ def append_entry(
         raise InvalidTimelineKind(
             f"unknown kind {kind!r}; valid kinds are {sorted(VALID_KINDS)}"
         )
+    if corrects_id is not None:
+        ref = conn.execute(
+            "SELECT asset_id FROM timeline_entries WHERE id = ?",
+            (corrects_id,),
+        ).fetchone()
+        if ref is None:
+            raise ValueError(
+                f"corrects_id {corrects_id} references a non-existent entry"
+            )
+        if int(ref["asset_id"]) != asset_id:
+            raise ValueError(
+                f"corrects_id {corrects_id} belongs to asset "
+                f"{ref['asset_id']}, not {asset_id}"
+            )
     row = conn.execute(
         "INSERT INTO timeline_entries "
         "(asset_id, kind, body, occurred_at, author, corrects_id) "

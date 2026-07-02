@@ -158,6 +158,11 @@ CREATE INDEX idx_review_open ON review_queue(observed_at) WHERE resolution IS NU
 CREATE TABLE timeline_entries (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     asset_id      INTEGER NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
+    -- Note: ON DELETE CASCADE is structurally blocked by the
+    -- timeline_entries_no_delete trigger below — assets with timeline
+    -- entries cannot be deleted. This is intentional: institutional
+    -- memory is permanent. A future asset-retirement feature must
+    -- handle timeline archival before deletion.
     kind          TEXT    NOT NULL
         CHECK (kind IN (
             'note',            -- manual journal entry

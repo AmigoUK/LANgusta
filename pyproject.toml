@@ -59,6 +59,12 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/langusta"]
+# Test-only backends shipped in the source tree but excluded from the wheel
+# to avoid inflating the install with unused network stubs.
+exclude = [
+    "src/langusta/scan/snmp/transcript_backend.py",
+    "src/langusta/monitor/ssh/stub_backend.py",
+]
 
 [tool.pytest.ini_options]
 minversion = "8.0"
