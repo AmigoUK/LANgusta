@@ -1,17 +1,22 @@
 """Per-user SSH known_hosts store for monitor `ssh_command` checks.
 
-Implements Trust-On-First-Use (TOFU): the first time LANgusta connects to
+Implements Trust-On-First-use (TOFU): the first time LANgusta connects to
 a given `host:port`, the server's host key is recorded in
 `~/.langusta/known_hosts`. Subsequent connections verify against the
 recorded key and fail if it differs — never auto-accepting a changed key.
 
 File format is OpenSSH-compatible so advanced users can edit it with a
 text editor or prepopulate it from their own `~/.ssh/known_hosts`.
+
+Audit S-7: the ``add`` method uses an exclusive file lock (``flock``) to
+prevent TOCTOU races where two concurrent first-use checks to the same
+host both see ``not contains`` and both append.
 """
 
 from __future__ import annotations
 
 import contextlib
+import fcntl
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -92,15 +97,37 @@ class KnownHostsStore:
         return self.get(host, port) is not None
 
     def add(self, entry: HostKeyEntry) -> None:
-        """Append a new entry. Refuses to overwrite an existing host:port."""
-        if self.contains(entry.host, entry.port):
-            raise KeyMismatchError(
-                f"{entry.host}:{entry.port} already has a recorded host key; "
-                "remove it from ~/.langusta/known_hosts before re-pinning."
-            )
+        """Append a new entry. Refuses to overwrite an existing host:port.
+
+        Uses an exclusive file lock to prevent TOCTOU races where two
+        concurrent first-use checks to the same host both pass the
+        ``contains`` check and both append (audit S-7).
+        """
         self._ensure_parent()
-        with self._path.open("a", encoding="utf-8") as f:
-            f.write(entry.to_openssh_line())
+        # Open in a+ so the file is created if it doesn't exist.
+        with self._path.open("a+", encoding="utf-8") as f:
+            # Exclusive lock for the duration of the check-and-add.
+            # LOCK_EX blocks until the lock is acquired.
+            fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+            try:
+                f.seek(0)
+                existing_lines = f.read().splitlines()
+                for line in existing_lines:
+                    parsed = _parse_line(line)
+                    if (
+                        parsed is not None
+                        and parsed.host == entry.host
+                        and parsed.port == entry.port
+                    ):
+                        raise KeyMismatchError(
+                            f"{entry.host}:{entry.port} already has a recorded host key; "
+                            "remove it from ~/.langusta/known_hosts before re-pinning."
+                        )
+                f.seek(0, os.SEEK_END)
+                f.write(entry.to_openssh_line())
+                f.flush()
+            finally:
+                fcntl.flock(f.fileno(), fcntl.LOCK_UN)
         # Force 0600 regardless of the process umask — the file carries
         # TOFU host-key pins that a local attacker could overwrite or
         # pre-seed to bypass verification on the first connect.

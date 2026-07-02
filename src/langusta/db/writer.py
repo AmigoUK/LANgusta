@@ -110,25 +110,43 @@ def list_identities(conn: sqlite3.Connection) -> list[AssetIdentity]:
 
     Public so the importer modules can reuse the same identity projection
     when delegating to ``core.identity.resolve``.
+
+    Uses a single LEFT JOIN instead of two separate full-table scans
+    (audit D-8 — O(N) instead of O(K*N)).
     """
-    asset_rows = conn.execute(
-        "SELECT id, hostname, primary_ip FROM assets"
+    rows = conn.execute(
+        "SELECT a.id, a.hostname, a.primary_ip, m.mac "
+        "FROM assets a "
+        "LEFT JOIN mac_addresses m ON m.asset_id = a.id "
+        "ORDER BY a.id"
     ).fetchall()
-    mac_rows = conn.execute(
-        "SELECT asset_id, mac FROM mac_addresses"
-    ).fetchall()
-    macs_by_asset: dict[int, set[str]] = {}
-    for r in mac_rows:
-        macs_by_asset.setdefault(int(r["asset_id"]), set()).add(r["mac"])
-    return [
-        AssetIdentity(
-            asset_id=int(r["id"]),
-            hostname=r["hostname"],
-            primary_ip=r["primary_ip"],
-            macs=frozenset(macs_by_asset.get(int(r["id"]), set())),
-        )
-        for r in asset_rows
-    ]
+    identities: list[AssetIdentity] = []
+    current_id: int | None = None
+    current_hostname: str | None = None
+    current_ip: str | None = None
+    current_macs: set[str] = set()
+
+    def _flush() -> None:
+        if current_id is not None:
+            identities.append(AssetIdentity(
+                asset_id=current_id,
+                hostname=current_hostname,
+                primary_ip=current_ip,
+                macs=frozenset(current_macs),
+            ))
+
+    for r in rows:
+        asset_id = int(r["id"])
+        if current_id is not None and asset_id != current_id:
+            _flush()
+            current_macs = set()
+        current_id = asset_id
+        current_hostname = r["hostname"]
+        current_ip = r["primary_ip"]
+        if r["mac"] is not None:
+            current_macs.add(r["mac"])
+    _flush()
+    return identities
 
 
 def _get_existing_field_values(
