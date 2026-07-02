@@ -1114,13 +1114,23 @@ def notify_add_webhook(
     label: str = typer.Option(..., "--label", help="Unique name for this sink."),
     url: str = typer.Option(..., "--url", help="HTTPS endpoint accepting POST."),
 ) -> None:
-    """Register a webhook sink. Monitor events POST JSON to this URL."""
+    """Register a webhook sink. Monitor events POST JSON to this URL.
+
+    The URL is encrypted at rest via the vault (audit S-2) because
+    Slack/Discord/Teams webhook URLs embed bearer tokens in the path.
+    """
+    vault = _unlock_vault()
+    envelope = vault.encrypt(url.encode("utf-8"))
+    config = {
+        "url_nonce": envelope.nonce.hex(),
+        "url_ciphertext": envelope.ciphertext.hex(),
+    }
     now = datetime.now(UTC)
     with connect(paths.db_path()) as conn:
         try:
             sid = notif_dal.create(
                 conn, label=label, kind="webhook",
-                config={"url": url}, now=now,
+                config=config, now=now,
             )
         except notif_dal.DuplicateLabel as exc:
             typer.echo(f"error: {exc}", err=True)
@@ -1227,13 +1237,14 @@ def notify_test(
         typer.echo(f"error: no sink with id={sink_id}", err=True)
         raise typer.Exit(code=1)
     sink = rows[0]
+    vault = _unlock_vault() if sink.kind == "webhook" else None
     event = MonitorEvent(
         asset_id=0, asset_hostname="langusta-test", asset_ip="127.0.0.1",
         kind="failure", check_kind="test", detail="synthetic test event",
         occurred_at=datetime.now(UTC),
     )
     try:
-        ok = asyncio.run(send_to_sink(sink, event))
+        ok = asyncio.run(send_to_sink(sink, event, vault=vault))
     except ValueError as exc:
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(code=1) from exc

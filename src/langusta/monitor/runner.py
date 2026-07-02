@@ -140,6 +140,7 @@ async def run_once(
                 sinks=sinks,
                 notifications_logfile=notifications_logfile,
                 semaphore=semaphore,
+                vault=vault,
             )
         )
     # `return_exceptions=True` so that one task blowing up in its
@@ -287,6 +288,7 @@ async def _run_one(
     sinks: list,
     notifications_logfile: Path | None,
     semaphore: asyncio.Semaphore,
+    vault: Vault | None = None,
 ) -> _Outcome:
     asset = assets_dal.get_by_id(conn, check.asset_id)
     target = check.target or (asset.primary_ip if asset is not None else None)
@@ -343,7 +345,10 @@ async def _run_one(
             detail=result.detail,
             occurred_at=now,
         )
-        await dispatch_event(event, sinks=sinks, logfile_path=notifications_logfile)
+        await dispatch_event(
+            event, sinks=sinks, logfile_path=notifications_logfile,
+            vault=vault,
+        )
 
     return _Outcome(status=result.status, transitioned=transitioned)
 

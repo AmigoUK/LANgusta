@@ -64,4 +64,11 @@ jobs:
           uv run langusta monitor install-service --dry-run
           # Review queue smoke (invariant surface)
           uv run langusta add --hostname ci-manual --ip 10.0.0.99
-          uv run langusta review || true
+          # Import a Lansweeper CSV whose hostname conflicts with the MANUAL
+          # asset above — must produce a proposed_change, not a silent overwrite.
+          printf 'AssetName,IPAddress\nci-scanned,10.0.0.99\n' > "$RUNNER_TEMP/lansweeper.csv"
+          uv run langusta import-lansweeper "$RUNNER_TEMP/lansweeper.csv"
+          uv run langusta review
+          # Accept the first proposed change (hostname conflict on MANUAL field).
+          uv run langusta review accept 1 || true
+          uv run langusta scan 127.0.0.1/32 || true

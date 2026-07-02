@@ -16,14 +16,19 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import smtplib
 import sys
 from dataclasses import dataclass
 from datetime import datetime
 from email.message import EmailMessage
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from langusta.db.notifications import NotificationSink
+
+if TYPE_CHECKING:
+    from langusta.crypto.vault import Vault
 
 
 @dataclass(frozen=True, slots=True)
@@ -95,8 +100,34 @@ def _event_to_dict(event: MonitorEvent) -> dict:
     }
 
 
-async def send_webhook(config: dict, event: MonitorEvent) -> bool:
-    url = config.get("url")
+def _decrypt_webhook_url(config: dict, vault: Vault | None) -> str | None:
+    """Decrypt the webhook URL from config, or fall back to legacy plaintext.
+
+    Webhook URLs are encrypted at rest via the vault (audit S-2). Pre-fix
+    sinks stored ``{"url": "..."}`` in plaintext; those still work until
+    re-created.
+    """
+    ct_hex = config.get("url_ciphertext")
+    nonce_hex = config.get("url_nonce")
+    if ct_hex and nonce_hex and vault is not None:
+        from langusta.crypto.vault import Envelope, InvalidPassword
+
+        try:
+            envelope = Envelope(
+                nonce=bytes.fromhex(nonce_hex),
+                ciphertext=bytes.fromhex(ct_hex),
+            )
+            return vault.decrypt(envelope).decode("utf-8")
+        except (InvalidPassword, ValueError) as exc:
+            logging.warning("failed to decrypt webhook URL: %s", exc)
+            return None
+    return config.get("url")
+
+
+async def send_webhook(
+    config: dict, event: MonitorEvent, *, vault: Vault | None = None,
+) -> bool:
+    url = _decrypt_webhook_url(config, vault)
     if not url:
         return False
     timeout = float(config.get("timeout", 5.0))
@@ -126,7 +157,9 @@ def _origin_of(url: str) -> str:
     return f"{parts.scheme}://{parts.netloc}"
 
 
-async def send_smtp(config: dict, event: MonitorEvent) -> bool:
+async def send_smtp(
+    config: dict, event: MonitorEvent, *, vault: Vault | None = None,
+) -> bool:
     import os
 
     cfg = SmtpConfig(
@@ -159,7 +192,9 @@ async def send_smtp(config: dict, event: MonitorEvent) -> bool:
     return True
 
 
-async def _send_logfile(config: dict, event: MonitorEvent) -> bool:
+async def _send_logfile(
+    config: dict, event: MonitorEvent, *, vault: Vault | None = None,
+) -> bool:
     path = config.get("path")
     if not path:
         return False
@@ -194,14 +229,16 @@ _SENDERS = {
 }
 
 
-async def send_to_sink(sink: NotificationSink, event: MonitorEvent) -> bool:
+async def send_to_sink(
+    sink: NotificationSink, event: MonitorEvent, *, vault: Vault | None = None,
+) -> bool:
     """Public single-sink sender for `notify test`. Returns True on
     success, False on send failure, or raises ValueError for an unknown
     sink kind. Keeps cli.py out of the private `_SENDERS` registry."""
     sender = _SENDERS.get(sink.kind)
     if sender is None:
         raise ValueError(f"no sender for sink kind {sink.kind!r}")
-    return bool(await sender(sink.config, event))
+    return bool(await sender(sink.config, event, vault=vault))
 
 
 async def dispatch(
@@ -209,6 +246,7 @@ async def dispatch(
     *,
     sinks: list[NotificationSink],
     logfile_path: Path,
+    vault: Vault | None = None,
 ) -> None:
     """Write to the always-on log file, then fan out to every enabled sink.
 
@@ -234,7 +272,7 @@ async def dispatch(
         if sender is None:
             continue
         try:
-            await sender(sink.config, event)
+            await sender(sink.config, event, vault=vault)
         except Exception as exc:
             print(
                 f"notification sink {sink.label!r} ({sink.kind}) "

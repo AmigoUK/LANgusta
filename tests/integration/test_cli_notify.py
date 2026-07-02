@@ -41,7 +41,13 @@ def test_notify_add_webhook(home: Path) -> None:
     with connect(home / ".langusta" / "db.sqlite") as conn:
         [sink] = notif_dal.list_all(conn)
     assert sink.kind == "webhook"
-    assert sink.config["url"] == "https://hooks.slack.com/services/TEST"
+    # URL must be encrypted at rest (audit S-2): no plaintext "url" key,
+    # and the raw DB bytes must not contain the URL.
+    assert "url" not in sink.config
+    assert "url_ciphertext" in sink.config
+    assert "url_nonce" in sink.config
+    raw = (home / ".langusta" / "db.sqlite").read_bytes()
+    assert b"hooks.slack.com" not in raw
 
 
 def test_notify_add_smtp(home: Path) -> None:

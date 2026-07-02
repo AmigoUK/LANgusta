@@ -100,6 +100,21 @@ def test_secret_not_in_raw_db_bytes(tmp_path: Path) -> None:
     assert SECRET.encode("ascii") not in raw
 
 
+def test_webhook_url_not_in_raw_db_bytes(tmp_path: Path) -> None:
+    """Webhook URLs embed bearer tokens and must be encrypted at rest (S-2)."""
+    home = tmp_path / "home"
+    home.mkdir()
+    runner.invoke(app, ["init"], env=_env(home))
+    webhook_url = "https://hooks.slack.com/services/T000/B000/XXXX-secret-token"
+    runner.invoke(
+        app, ["notify", "add-webhook", "--label", "wh", "--url", webhook_url],
+        env=_env(home),
+    )
+    raw = (home / ".langusta" / "db.sqlite").read_bytes()
+    assert b"secret-token" not in raw
+    assert webhook_url.encode("utf-8") not in raw
+
+
 # ---------------------------------------------------------------------------
 # File permissions
 # ---------------------------------------------------------------------------
