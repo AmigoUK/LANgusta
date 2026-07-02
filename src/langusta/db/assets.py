@@ -73,6 +73,7 @@ def insert_manual(
     the CLI. Additional MACs can be added via `_insert_mac` for tests or
     later milestones.
     """
+    _manual = FieldProvenance.MANUAL.value
     provided = {
         "hostname": hostname,
         "primary_ip": primary_ip,
@@ -93,7 +94,7 @@ def insert_manual(
         "hostname, primary_ip, vendor, detected_os, device_type, "
         "description, location, owner, management_url, criticality, "
         "first_seen, last_seen, source"
-        ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'manual') "
+        f") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '{_manual}') "
         "RETURNING id",
         (
             hostname, primary_ip, vendor, detected_os, device_type,
@@ -108,7 +109,7 @@ def insert_manual(
         if value is not None:
             conn.execute(
                 "INSERT INTO field_provenance (asset_id, field, provenance, set_at) "
-                "VALUES (?, ?, 'manual', ?)",
+                f"VALUES (?, ?, '{_manual}', ?)",
                 (asset_id, field_name, now_iso),
             )
 

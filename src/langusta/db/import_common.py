@@ -29,7 +29,7 @@ from langusta.core.identity import (
     resolve,
 )
 from langusta.core.models import normalize_mac
-from langusta.core.provenance import merge_scan_result
+from langusta.core.provenance import FieldProvenance, merge_scan_result
 from langusta.db import assets as assets_dal
 from langusta.db import proposed_changes as pc_dal
 from langusta.db import timeline as tl_dal
@@ -128,6 +128,7 @@ def insert_imported_asset(
     Also appends a `kind='import'` timeline entry.
     """
     now_iso = _iso(now)
+    _imported = FieldProvenance.IMPORTED.value
 
     columns = [f for f in IMPORTABLE_FIELDS if fields.get(f) is not None]
 
@@ -137,13 +138,13 @@ def insert_imported_asset(
         values = [fields[f] for f in columns]
         cur = conn.execute(
             f"INSERT INTO assets ({col_names}, first_seen, last_seen, source) "
-            f"VALUES ({placeholders}, ?, ?, 'imported') RETURNING id",
+            f"VALUES ({placeholders}, ?, ?, '{_imported}') RETURNING id",
             (*values, now_iso, now_iso),
         )
     else:
         cur = conn.execute(
             "INSERT INTO assets (first_seen, last_seen, source) "
-            "VALUES (?, ?, 'imported') RETURNING id",
+            f"VALUES (?, ?, '{_imported}') RETURNING id",
             (now_iso, now_iso),
         )
     asset_id = int(cur.fetchone()[0])
@@ -151,7 +152,7 @@ def insert_imported_asset(
     for name in columns:
         conn.execute(
             "INSERT INTO field_provenance (asset_id, field, provenance, set_at) "
-            "VALUES (?, ?, 'imported', ?)",
+            f"VALUES (?, ?, '{_imported}', ?)",
             (asset_id, name, now_iso),
         )
 
@@ -193,6 +194,7 @@ def _apply_update(
     applied, proposed = merge_scan_result(existing, incoming, now=now)
 
     now_iso = _iso(now)
+    _imported = FieldProvenance.IMPORTED.value
 
     if applied:
         assignments = ", ".join(f"{name} = ?" for name in applied)
@@ -207,9 +209,9 @@ def _apply_update(
         for name in applied:
             conn.execute(
                 "INSERT INTO field_provenance (asset_id, field, provenance, set_at) "
-                "VALUES (?, ?, 'imported', ?) "
+                f"VALUES (?, ?, '{_imported}', ?) "
                 "ON CONFLICT(asset_id, field) DO UPDATE SET "
-                "provenance = 'imported', set_at = excluded.set_at",
+                f"provenance = '{_imported}', set_at = excluded.set_at",
                 (asset_id, name, now_iso),
             )
     else:

@@ -253,13 +253,14 @@ def _apply_insert(
 ) -> Inserted:
     fields = _obs_to_fields(obs)
     now_iso = _iso(now)
+    _scanned = FieldProvenance.SCANNED.value
 
     # Asset row with SCANNED source — every scannable field we saw gets a
     # provenance row.
     cur = conn.execute(
         "INSERT INTO assets (hostname, primary_ip, vendor, detected_os, "
         "device_type, first_seen, last_seen, source) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, 'scanned') RETURNING id",
+        f"VALUES (?, ?, ?, ?, ?, ?, ?, '{_scanned}') RETURNING id",
         (
             fields.get("hostname"),
             fields.get("primary_ip"),
@@ -275,7 +276,7 @@ def _apply_insert(
     for name in fields:
         conn.execute(
             "INSERT INTO field_provenance (asset_id, field, provenance, set_at) "
-            "VALUES (?, ?, 'scanned', ?)",
+            f"VALUES (?, ?, '{_scanned}', ?)",
             (asset_id, name, now_iso),
         )
 

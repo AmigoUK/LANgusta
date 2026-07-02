@@ -192,11 +192,12 @@ def accept(conn: sqlite3.Connection, pc_id: int, *, now: datetime) -> None:
         (row.proposed_value, now_iso, row.asset_id),
     )
     # Flip the field's provenance to SCANNED.
+    _scanned = FieldProvenance.SCANNED.value
     conn.execute(
         "INSERT INTO field_provenance (asset_id, field, provenance, set_at) "
-        "VALUES (?, ?, 'scanned', ?) "
+        f"VALUES (?, ?, '{_scanned}', ?) "
         "ON CONFLICT(asset_id, field) DO UPDATE SET "
-        "provenance = 'scanned', set_at = excluded.set_at",
+        f"provenance = '{_scanned}', set_at = excluded.set_at",
         (row.asset_id, row.field, now_iso),
     )
     conn.execute(
@@ -250,11 +251,12 @@ def edit_override(
         f"UPDATE assets SET {row.field} = ?, last_seen = ? WHERE id = ?",
         (value, now_iso, row.asset_id),
     )
+    _manual = FieldProvenance.MANUAL.value
     conn.execute(
         "INSERT INTO field_provenance (asset_id, field, provenance, set_at) "
-        "VALUES (?, ?, 'manual', ?) "
+        f"VALUES (?, ?, '{_manual}', ?) "
         "ON CONFLICT(asset_id, field) DO UPDATE SET "
-        "provenance = 'manual', set_at = excluded.set_at",
+        f"provenance = '{_manual}', set_at = excluded.set_at",
         (row.asset_id, row.field, now_iso),
     )
     conn.execute(
