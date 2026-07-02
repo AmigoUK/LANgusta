@@ -21,8 +21,11 @@ _DEFAULT_SUCCESS_EXIT = 0
 
 class SshCommandCheck:
     async def run(self, *, target: str, **config: object) -> CheckResult:
-        command = _required_str(config, "command")
-        username = _required_str(config, "username")
+        try:
+            command = _required_str(config, "command")
+            username = _required_str(config, "username")
+        except ValueError as exc:
+            return CheckResult(status="fail", latency_ms=None, detail=str(exc))
         ssh_auth = config.get("ssh_auth")
         ssh_client = config.get("ssh_client")
         if not isinstance(ssh_auth, (SshKeyAuth, SshPasswordAuth)):

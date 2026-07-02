@@ -21,7 +21,10 @@ _DETAIL_MAX = 200
 
 class SnmpOidCheck:
     async def run(self, *, target: str, **config: object) -> CheckResult:
-        oid = _required_str(config, "oid")
+        try:
+            oid = _required_str(config, "oid")
+        except ValueError as exc:
+            return CheckResult(status="fail", latency_ms=None, detail=str(exc))
         snmp_auth = config.get("snmp_auth")
         snmp_client = config.get("snmp_client")
         if not isinstance(snmp_auth, (SnmpV2cAuth, SnmpV3Auth)):

@@ -62,3 +62,6 @@ jobs:
           uv run langusta monitor enable --asset 1 --kind icmp --interval 60
           uv run langusta monitor list
           uv run langusta monitor install-service --dry-run
+          # Review queue smoke (invariant surface)
+          uv run langusta add --hostname ci-manual --ip 10.0.0.99
+          uv run langusta review || true
