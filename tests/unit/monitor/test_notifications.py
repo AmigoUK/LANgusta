@@ -145,6 +145,63 @@ async def test_smtp_exception_returns_false(monkeypatch: pytest.MonkeyPatch) -> 
     assert await send_smtp(config, _event()) is False
 
 
+@pytest.mark.asyncio
+async def test_smtp_reads_credentials_from_env_vars(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """LANGUSTA_SMTP_USERNAME / LANGUSTA_SMTP_PASSWORD are read at send
+    time when the stored config doesn't include them."""
+    captured: dict = {}
+
+    def fake_sendmail(cfg: SmtpConfig, subject: str, body: str) -> None:
+        captured["username"] = cfg.username
+        captured["password"] = cfg.password
+
+    monkeypatch.setattr(
+        "langusta.monitor.notifications._smtp_send_blocking", fake_sendmail,
+    )
+    monkeypatch.setenv("LANGUSTA_SMTP_USERNAME", "relay-user")
+    monkeypatch.setenv("LANGUSTA_SMTP_PASSWORD", "relay-pass-12345")
+
+    config = {
+        "host": "smtp.example.com", "port": 587,
+        "from": "langusta@example.com", "to": "oncall@example.com",
+        "starttls": True,
+    }
+    ok = await send_smtp(config, _event())
+    assert ok is True
+    assert captured["username"] == "relay-user"
+    assert captured["password"] == "relay-pass-12345"
+
+
+@pytest.mark.asyncio
+async def test_smtp_skips_login_without_credentials(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With no env vars and no stored credentials, username/password
+    remain None — the open-relay path still works."""
+    captured: dict = {}
+
+    def fake_sendmail(cfg: SmtpConfig, subject: str, body: str) -> None:
+        captured["username"] = cfg.username
+        captured["password"] = cfg.password
+
+    monkeypatch.setattr(
+        "langusta.monitor.notifications._smtp_send_blocking", fake_sendmail,
+    )
+    monkeypatch.delenv("LANGUSTA_SMTP_USERNAME", raising=False)
+    monkeypatch.delenv("LANGUSTA_SMTP_PASSWORD", raising=False)
+
+    config = {
+        "host": "smtp.example.com", "port": 25,
+        "from": "langusta@example.com", "to": "oncall@example.com",
+    }
+    ok = await send_smtp(config, _event())
+    assert ok is True
+    assert captured["username"] is None
+    assert captured["password"] is None
+
+
 # ---------------------------------------------------------------------------
 # Dispatch — sinks honoured, per-sink failure doesn't stop the rest
 # ---------------------------------------------------------------------------

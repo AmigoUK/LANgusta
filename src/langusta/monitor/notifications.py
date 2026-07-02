@@ -127,14 +127,16 @@ def _origin_of(url: str) -> str:
 
 
 async def send_smtp(config: dict, event: MonitorEvent) -> bool:
+    import os
+
     cfg = SmtpConfig(
         host=config["host"],
         port=int(config["port"]),
         sender=config["from"],
         recipient=config["to"],
         starttls=bool(config.get("starttls", False)),
-        username=config.get("username"),
-        password=config.get("password"),
+        username=config.get("username") or os.environ.get("LANGUSTA_SMTP_USERNAME"),
+        password=config.get("password") or os.environ.get("LANGUSTA_SMTP_PASSWORD"),
     )
     host = event.asset_hostname or event.asset_ip or f"#{event.asset_id}"
     subject = f"[LANgusta] {event.check_kind} {event.kind} on {host}"
