@@ -37,7 +37,7 @@ class _ScriptedCheck:
         return CheckResult(status=status, latency_ms=1.0, detail=None)
 
 
-@settings(max_examples=10, deadline=None)
+@settings(max_examples=100, deadline=None)
 @given(
     statuses=st.lists(
         st.sampled_from(["ok", "fail"]), min_size=0, max_size=10,

@@ -18,7 +18,7 @@ from langusta.db import assets as assets_dal
 
 # Characters with special meaning to FTS5: strip to avoid syntax errors and
 # deliberately avoid letting users run arbitrary MATCH queries.
-_FTS_UNSAFE = re.compile(r'[\"\'\-()*:]')
+_FTS_UNSAFE = re.compile(r'[\"\'\-()*:\\]')
 
 
 def _fts_query(query: str) -> str:

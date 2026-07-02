@@ -23,7 +23,7 @@ from tests.strategies import hostnames, ipv4
 _NOW = datetime(2026, 4, 20, 12, 0, 0, tzinfo=UTC)
 
 
-@settings(max_examples=15, deadline=None)
+@settings(max_examples=100, deadline=None)
 @given(
     hosts=st.lists(
         st.tuples(hostnames, ipv4),

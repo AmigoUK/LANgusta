@@ -74,7 +74,8 @@ filterwarnings = [
     "ignore::DeprecationWarning:pysnmp.*",
     # pysnmp's SnmpEngine and zeroconf leak sockets on shutdown in the test
     # runner; the real process closes them on exit. These warnings are noise.
-    "ignore::ResourceWarning",
+    "ignore::ResourceWarning:pysnmp.*",
+    "ignore::ResourceWarning:zeroconf.*",
     "ignore::pytest.PytestUnraisableExceptionWarning",
 ]
 

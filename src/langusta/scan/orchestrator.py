@@ -109,14 +109,15 @@ async def run_scan(
     arp_map = arp_lookup(alive_set, backend=platform_backend)
 
     # Run enrichment stages concurrently against alive hosts.
-    # Wrap the gather in try/finally so a BaseException (KeyboardInterrupt,
-    # Cancelled, SystemExit) doesn't leak the in-flight tasks — gather's
-    # default return_exceptions=False cancels siblings on a regular
-    # Exception, but not on BaseException. Wave-3 C-018.
+    # Wrap the gather in try/finally so in-flight tasks are cancelled if
+    # any enrichment raises (gather's default does NOT cancel siblings on
+    # any exception type — the finally block handles cleanup for both
+    # Exception and BaseException). Wave-3 C-018.
     rdns_task = asyncio.create_task(resolve_many(alive_set))
     tcp_task = asyncio.create_task(probe_ports_many(alive_set))
     mdns_task = asyncio.create_task(mdns_discover(target_ips=alive_set))
     enrichment_tasks: list[asyncio.Task] = [rdns_task, tcp_task, mdns_task]
+    snmp_gather: asyncio.Future | None = None
 
     snmp_map: dict[str, str] = {}
     try:
@@ -145,6 +146,8 @@ async def run_scan(
         for t in enrichment_tasks:
             if not t.done():
                 t.cancel()
+        if snmp_gather is not None and not snmp_gather.done():
+            snmp_gather.cancel()
 
     inserted = updated = deferred = proposed_total = 0
 

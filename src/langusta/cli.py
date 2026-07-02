@@ -1000,16 +1000,28 @@ def monitor_start(
 
     log_path = paths.monitor_log_path()
     log_path.parent.mkdir(parents=True, exist_ok=True)
-    # Pass env= explicitly and strip LANGUSTA_MASTER_PASSWORD. Inheriting
-    # the parent's env would leave the master password visible in the
+    # Pass env= explicitly and strip all LANGUSTA_* secret env vars.
+    # Inheriting the parent's env would leave secrets visible in the
     # daemon's /proc/<pid>/environ to any local process that can stat
     # that pid. Cred-backed checks (snmp_oid, ssh_command) require the
     # vault on the daemon side; users who need those should deploy via
     # `langusta monitor install-service` (ADR-0002) and let the service
     # manager provide the password through its own credential mechanism.
+    _secret_env = frozenset({
+        "LANGUSTA_MASTER_PASSWORD",
+        "LANGUSTA_CRED_SECRET",
+        "LANGUSTA_CRED_V3_USER",
+        "LANGUSTA_CRED_V3_AUTH_PROTO",
+        "LANGUSTA_CRED_V3_AUTH_PASS",
+        "LANGUSTA_CRED_V3_PRIV_PROTO",
+        "LANGUSTA_CRED_V3_PRIV_PASS",
+        "LANGUSTA_NETBOX_TOKEN",
+        "LANGUSTA_SMTP_USERNAME",
+        "LANGUSTA_SMTP_PASSWORD",
+    })
     child_env = {
         k: v for k, v in os.environ.items()
-        if k != "LANGUSTA_MASTER_PASSWORD"
+        if k not in _secret_env
     }
     # Close the parent's copy of the log fd after Popen dups it into the
     # child. Without this the parent leaks one fd per `monitor start`

@@ -39,7 +39,7 @@ def _snapshot_counts(conn) -> dict[str, int]:
     return out
 
 
-@settings(max_examples=20, deadline=None)
+@settings(max_examples=100, deadline=None)
 @given(
     obs_host=hostnames,
     obs_ip=ipv4,

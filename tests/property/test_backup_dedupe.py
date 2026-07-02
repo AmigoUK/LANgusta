@@ -33,7 +33,7 @@ def _seed_tmp(tmp: Path) -> tuple[Path, Path]:
     return db, tmp / "home" / ".langusta" / "backups"
 
 
-@settings(max_examples=30, deadline=None)
+@settings(max_examples=100, deadline=None)
 @given(
     offsets_hours=st.lists(
         st.floats(min_value=0.0, max_value=240.0, allow_nan=False),

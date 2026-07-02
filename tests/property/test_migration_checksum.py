@@ -21,7 +21,7 @@ from langusta.db.migrate import (
 )
 
 
-@settings(max_examples=20, deadline=None)
+@settings(max_examples=100, deadline=None)
 @given(
     new_checksum=st.text(
         alphabet="0123456789abcdef", min_size=64, max_size=64,

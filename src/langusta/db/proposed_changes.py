@@ -201,7 +201,7 @@ def accept(conn: sqlite3.Connection, pc_id: int, *, now: datetime) -> None:
     )
     conn.execute(
         "UPDATE proposed_changes SET resolution = 'accepted', resolved_at = ? "
-        "WHERE id = ?",
+        "WHERE id = ? AND resolution IS NULL",
         (now_iso, pc_id),
     )
     tl_dal.append_entry(
@@ -222,7 +222,7 @@ def reject(conn: sqlite3.Connection, pc_id: int, *, now: datetime) -> None:
     row = _assert_open(conn, pc_id)
     conn.execute(
         "UPDATE proposed_changes SET resolution = 'rejected', resolved_at = ? "
-        "WHERE id = ?",
+        "WHERE id = ? AND resolution IS NULL",
         (_iso(now), pc_id),
     )
     tl_dal.append_entry(
