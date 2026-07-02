@@ -350,3 +350,70 @@ def test_resolve_config_passes_timeout_to_tcp_and_http(kind: str) -> None:
         f"{kind}: timeout_seconds={check.timeout_seconds} dropped by "
         f"_resolve_config; resolved config={cfg}"
     )
+
+
+# ---------------------------------------------------------------------------
+# check_results pruning (audit D-5)
+# ---------------------------------------------------------------------------
+
+
+def test_prune_check_results_deletes_old_rows(tmp_path: Path) -> None:
+    """check_results older than retention_days are pruned."""
+    db = tmp_path / "prune.sqlite"
+    migrate(db)
+
+    with connect(db) as conn:
+        aid = assets_dal.insert_manual(
+            conn, hostname="dev", primary_ip="10.0.0.1", now=NOW,
+        )
+        cid = mon_dal.enable_check(
+            conn, asset_id=aid, kind="icmp", interval_seconds=60, now=NOW,
+        )
+        # Insert a recent result and an old result.
+        recent = NOW
+        old = NOW - timedelta(days=45)
+        conn.execute(
+            "INSERT INTO check_results (check_id, asset_id, status, latency_ms, detail, recorded_at) "
+            "VALUES (?, ?, 'ok', 1.0, NULL, ?)",
+            (cid, aid, recent.isoformat(timespec="seconds")),
+        )
+        conn.execute(
+            "INSERT INTO check_results (check_id, asset_id, status, latency_ms, detail, recorded_at) "
+            "VALUES (?, ?, 'ok', 1.0, NULL, ?)",
+            (cid, aid, old.isoformat(timespec="seconds")),
+        )
+
+    with connect(db) as conn:
+        deleted = mon_dal.prune_check_results(conn, now=NOW, retention_days=30)
+        remaining = conn.execute("SELECT COUNT(*) FROM check_results").fetchone()[0]
+
+    assert deleted == 1
+    assert remaining == 1
+
+
+def test_prune_check_results_keeps_recent(tmp_path: Path) -> None:
+    """Nothing is deleted when all rows are within the retention window."""
+    db = tmp_path / "keep.sqlite"
+    migrate(db)
+
+    with connect(db) as conn:
+        aid = assets_dal.insert_manual(
+            conn, hostname="dev", primary_ip="10.0.0.2", now=NOW,
+        )
+        cid = mon_dal.enable_check(
+            conn, asset_id=aid, kind="icmp", interval_seconds=60, now=NOW,
+        )
+        for days_ago in range(5):
+            ts = NOW - timedelta(days=days_ago)
+            conn.execute(
+                "INSERT INTO check_results (check_id, asset_id, status, latency_ms, detail, recorded_at) "
+                "VALUES (?, ?, 'ok', 1.0, NULL, ?)",
+                (cid, aid, ts.isoformat(timespec="seconds")),
+            )
+
+    with connect(db) as conn:
+        deleted = mon_dal.prune_check_results(conn, now=NOW, retention_days=30)
+        remaining = conn.execute("SELECT COUNT(*) FROM check_results").fetchone()[0]
+
+    assert deleted == 0
+    assert remaining == 5

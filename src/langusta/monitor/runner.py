@@ -165,6 +165,15 @@ async def run_once(
     # a single bad row wedges the operator's liveness signal.
     mon_dal.set_heartbeat(conn, now=now)
 
+    # Prune stale check_results once per cycle to prevent unbounded growth
+    # (audit D-5). Failures here are non-fatal — a bloated table degrades
+    # queries but doesn't break monitoring.
+    try:
+        mon_dal.prune_check_results(conn, now=now)
+    except Exception as exc:
+        import sys
+        print(f"check_results prune failed: {exc}", file=sys.stderr)
+
     executed = len(outcomes)
     ok_count = sum(1 for o in outcomes if o.status == "ok")
     fail_count = sum(1 for o in outcomes if o.status == "fail")

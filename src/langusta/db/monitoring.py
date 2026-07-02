@@ -321,3 +321,31 @@ def has_cred_backed_check(conn: sqlite3.Connection) -> bool:
         "AND kind IN ('snmp_oid', 'ssh_command') LIMIT 1"
     ).fetchone()
     return row is not None
+
+
+# ---------------------------------------------------------------------------
+# Retention — prune old check_results (audit D-5)
+# ---------------------------------------------------------------------------
+
+DEFAULT_RETENTION_DAYS = 30
+
+
+def prune_check_results(
+    conn: sqlite3.Connection,
+    *,
+    now: datetime,
+    retention_days: int = DEFAULT_RETENTION_DAYS,
+) -> int:
+    """Delete check_results older than `retention_days`. Returns the number
+    of rows deleted.
+
+    Called once per daemon cycle to prevent unbounded growth (at 1-minute
+    intervals across 250 devices, the table grows ~360k rows/day).
+    """
+    cutoff = now.timestamp() - retention_days * 86400
+    cutoff_dt = datetime.fromtimestamp(cutoff, tz=now.tzinfo)
+    cur = conn.execute(
+        "DELETE FROM check_results WHERE recorded_at < ?",
+        (_iso(cutoff_dt),),
+    )
+    return cur.rowcount
