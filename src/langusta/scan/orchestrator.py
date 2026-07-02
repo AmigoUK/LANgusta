@@ -95,6 +95,11 @@ async def run_scan(
 
     start = effective_clock()
     scan_id = scans_dal.start_scan(conn, target=target, now=start)
+    # Commit immediately so the WAL write-lock is released before network
+    # I/O begins. Holding the transaction open across ICMP/ARP/rDNS/TCP/
+    # mDNS/SNMP enrichment blocks the monitor daemon's writes past
+    # busy_timeout, crashing it.
+    conn.commit()
 
     probes = expand_target(target)
     alive_results = await effective_ping(probes) if probes else []

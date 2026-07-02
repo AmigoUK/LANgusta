@@ -938,10 +938,22 @@ def monitor_daemon(
     try:
         while True:
             now = datetime.now(UTC)
-            with connect(paths.db_path()) as conn:
-                summary = asyncio.run(
-                    run_once(conn, now=now, notifications_logfile=logfile, vault=vault),
+            try:
+                with connect(paths.db_path()) as conn:
+                    summary = asyncio.run(
+                        run_once(
+                            conn, now=now,
+                            notifications_logfile=logfile, vault=vault,
+                        ),
+                    )
+            except Exception as exc:
+                typer.echo(
+                    f"[{now.isoformat(timespec='seconds')}] "
+                    f"monitor cycle failed: {exc}; retrying in {interval}s",
+                    err=True,
                 )
+                _time.sleep(interval)
+                continue
             typer.echo(
                 f"[{now.isoformat(timespec='seconds')}] "
                 f"executed {summary.executed} "
