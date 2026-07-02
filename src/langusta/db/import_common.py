@@ -20,10 +20,20 @@ import sqlite3
 from dataclasses import dataclass
 from datetime import datetime
 
+from langusta.core.identity import (
+    Ambiguous,
+    Candidate,
+    Insert,
+    Resolution,
+    Update,
+    resolve,
+)
+from langusta.core.models import normalize_mac
 from langusta.core.provenance import merge_scan_result
 from langusta.db import assets as assets_dal
 from langusta.db import proposed_changes as pc_dal
 from langusta.db import timeline as tl_dal
+from langusta.db.writer import list_identities
 
 # Asset columns the importer may set. Subset of assets_dal._PROVENANCE_FIELDS;
 # `criticality` is deliberately excluded (no external-tool equivalent) and
@@ -82,26 +92,23 @@ def _iso(dt: datetime) -> str:
     return dt.isoformat(timespec="seconds")
 
 
-def _resolve_identity(
-    conn: sqlite3.Connection, *, mac: str | None, primary_ip: str | None
-) -> tuple[int | None, int | None]:
-    """Return (mac_asset_id, ip_asset_id) — either may be None."""
-    mac_asset: int | None = None
-    ip_asset: int | None = None
-    if mac is not None:
-        row = conn.execute(
-            "SELECT asset_id FROM mac_addresses WHERE mac = ?", (mac.lower(),),
-        ).fetchone()
-        if row is not None:
-            mac_asset = int(row["asset_id"])
-    if primary_ip is not None:
-        row = conn.execute(
-            "SELECT id FROM assets WHERE primary_ip = ? ORDER BY id LIMIT 1",
-            (primary_ip,),
-        ).fetchone()
-        if row is not None:
-            ip_asset = int(row["id"])
-    return mac_asset, ip_asset
+def _resolve_via_core(
+    conn: sqlite3.Connection,
+    *,
+    hostname: str | None,
+    primary_ip: str | None,
+    mac: str | None,
+) -> Resolution:
+    """Delegate to ``core.identity.resolve`` for hostname-aware matching.
+
+    This replaces the old MAC+IP-only resolver. ``core.identity.resolve``
+    also checks hostname conflicts and returns ``Ambiguous`` when MAC points
+    at asset A but hostname points at asset B (the Lansweeper-failure mode).
+    """
+    identities = list_identities(conn)
+    macs = frozenset({normalize_mac(mac)}) if mac else frozenset()
+    candidate = Candidate(hostname=hostname, primary_ip=primary_ip, macs=macs)
+    return resolve(candidate, identities)
 
 
 # ---------------------------------------------------------------------------
@@ -152,7 +159,7 @@ def insert_imported_asset(
         conn.execute(
             "INSERT INTO mac_addresses (asset_id, mac, first_seen, last_seen) "
             "VALUES (?, ?, ?, ?)",
-            (asset_id, mac.lower(), now_iso, now_iso),
+            (asset_id, normalize_mac(mac), now_iso, now_iso),
         )
 
     tl_dal.append_entry(
@@ -176,13 +183,13 @@ def _apply_update(
     *,
     asset_id: int,
     fields: dict[str, str],
-    mac: str,
+    mac: str | None,
     now: datetime,
 ) -> Updated:
     existing = assets_dal.get_provenance(conn, asset_id)
     # merge_scan_result expects `incoming: dict[str, str]`; we filter to the
     # importable set (it already respects per-field presence).
-    incoming = {k: v for k, v in fields.items() if k in IMPORTABLE_FIELDS}
+    incoming = {k: v for k, v in fields.items() if k in IMPORTABLE_FIELDS and v is not None}
     applied, proposed = merge_scan_result(existing, incoming, now=now)
 
     now_iso = _iso(now)
@@ -212,10 +219,11 @@ def _apply_update(
         )
 
     # Refresh the matched MAC's last_seen for liveness reporting.
-    conn.execute(
-        "UPDATE mac_addresses SET last_seen = ? WHERE mac = ? AND asset_id = ?",
-        (now_iso, mac.lower(), asset_id),
-    )
+    if mac is not None:
+        conn.execute(
+            "UPDATE mac_addresses SET last_seen = ? WHERE mac = ? AND asset_id = ?",
+            (now_iso, normalize_mac(mac), asset_id),
+        )
 
     for change in proposed:
         pc_dal.insert(
@@ -272,7 +280,7 @@ def _defer_to_review(
 ) -> Deferred:
     observation: dict[str, str] = dict(fields)
     if mac is not None:
-        observation["mac"] = mac.lower()
+        observation["mac"] = normalize_mac(mac)
     observation_json = json.dumps(observation, separators=(",", ":"), sort_keys=True)
     candidates_json = json.dumps(candidates, separators=(",", ":"))
     row = conn.execute(
@@ -297,41 +305,35 @@ def apply_imported_observation(
 ) -> ImportOutcome:
     """Route one imported row through identity resolution + provenance rules.
 
-    `fields` is a flat dict of `IMPORTABLE_FIELDS` subset → string value.
-    Extra keys are ignored. The caller is responsible for IP validation and
-    header normalisation.
+    Uses ``core.identity.resolve`` for hostname-aware matching, so a row
+    whose MAC points at asset A but hostname at asset B is deferred to the
+    review queue (the Lansweeper-failure case).
     """
-    primary_ip = fields.get("primary_ip")
-    mac_asset, ip_asset = _resolve_identity(conn, mac=mac, primary_ip=primary_ip)
+    resolution = _resolve_via_core(
+        conn,
+        hostname=fields.get("hostname"),
+        primary_ip=fields.get("primary_ip"),
+        mac=mac,
+    )
 
-    if mac_asset is None and ip_asset is None:
+    if isinstance(resolution, Insert):
         asset_id = insert_imported_asset(conn, fields=fields, mac=mac, now=now)
         return Inserted(asset_id=asset_id)
 
-    if mac_asset is not None and (ip_asset is None or ip_asset == mac_asset):
-        # MAC points at this asset (IP either unknown or agrees) → merge.
-        assert mac is not None  # narrowing for type checkers
+    if isinstance(resolution, Update):
         return _apply_update(
-            conn, asset_id=mac_asset, fields=fields, mac=mac, now=now,
+            conn, asset_id=resolution.asset_id, fields=fields, mac=mac, now=now,
         )
 
-    if mac_asset is None and ip_asset is not None:
-        return _defer_to_review(
-            conn,
-            fields=fields,
-            mac=mac,
-            candidates=[{"asset_id": ip_asset, "score": 80, "reason": "ip_match"}],
-            now=now,
-        )
-
-    # MAC and IP point to DIFFERENT existing assets — ambiguous.
+    # Ambiguous — defer to review queue.
+    assert isinstance(resolution, Ambiguous)
     return _defer_to_review(
         conn,
         fields=fields,
         mac=mac,
         candidates=[
-            {"asset_id": mac_asset, "score": 90, "reason": "mac_match"},
-            {"asset_id": ip_asset, "score": 80, "reason": "ip_match"},
+            {"asset_id": aid, "score": conf, "reason": resolution.reason}
+            for aid, conf in resolution.candidates
         ],
         now=now,
     )
@@ -347,5 +349,5 @@ def _describe(fields: dict[str, str], mac: str | None, *, prefix: str) -> str:
     for key in sorted(fields):
         bits.append(f"{key}={fields[key]!r}")
     if mac:
-        bits.append(f"mac={mac.lower()!r}")
+        bits.append(f"mac={normalize_mac(mac)!r}")
     return f"{prefix} ({', '.join(bits)})"

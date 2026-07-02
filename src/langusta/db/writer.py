@@ -105,8 +105,12 @@ def _obs_to_candidate(obs: Observation) -> Candidate:
     return Candidate(hostname=obs.hostname, primary_ip=obs.primary_ip, macs=macs)
 
 
-def _list_identities(conn: sqlite3.Connection) -> list[AssetIdentity]:
-    """Project the assets + mac_addresses tables into `AssetIdentity` records."""
+def list_identities(conn: sqlite3.Connection) -> list[AssetIdentity]:
+    """Project the assets + mac_addresses tables into `AssetIdentity` records.
+
+    Public so the importer modules can reuse the same identity projection
+    when delegating to ``core.identity.resolve``.
+    """
     asset_rows = conn.execute(
         "SELECT id, hostname, primary_ip FROM assets"
     ).fetchall()
@@ -460,7 +464,7 @@ def apply_scan_observation(
     (usually wrapping the enclosing scan in a single `connect()` block).
     """
     candidate = _obs_to_candidate(obs)
-    identities = _list_identities(conn)
+    identities = list_identities(conn)
     resolution = resolve(candidate, identities)
 
     if isinstance(resolution, Insert):

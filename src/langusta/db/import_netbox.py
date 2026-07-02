@@ -16,7 +16,10 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime
 
-from langusta.core.models import normalize_mac
+from langusta.db.import_common import (
+    Inserted,
+    apply_imported_observation,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -86,12 +89,6 @@ def _extract_model(device: dict) -> str | None:
     return dt.get("model") if dt else None
 
 
-def _mac_exists(conn: sqlite3.Connection, mac: str) -> bool:
-    return conn.execute(
-        "SELECT 1 FROM mac_addresses WHERE mac = ?", (normalize_mac(mac),),
-    ).fetchone() is not None
-
-
 def _ip_exists(conn: sqlite3.Connection, ip: str) -> bool:
     return conn.execute(
         "SELECT 1 FROM assets WHERE primary_ip = ?", (ip,),
@@ -128,7 +125,6 @@ async def import_netbox(
     and following it would leak the bearer token).
     """
     getter: HttpGet = http_get if http_get is not None else default_http_get
-    iso = now.isoformat(timespec="seconds")
 
     imported = 0
     skipped = 0
@@ -158,30 +154,23 @@ async def import_netbox(
             vendor = _extract_vendor(device)
             model = _extract_model(device)
 
-            cur = conn.execute(
-                "INSERT INTO assets ("
-                "hostname, primary_ip, vendor, device_type, "
-                "first_seen, last_seen, source"
-                ") VALUES (?, ?, ?, ?, ?, ?, 'imported') RETURNING id",
-                (hostname, ip, vendor, model, iso, iso),
-            )
-            asset_id = int(cur.fetchone()[0])
+            fields: dict[str, str] = {}
+            if hostname:
+                fields["hostname"] = hostname
+            if ip:
+                fields["primary_ip"] = ip
+            if vendor:
+                fields["vendor"] = vendor
+            if model:
+                fields["device_type"] = model
 
-            for field_name, value in (
-                ("hostname", hostname),
-                ("primary_ip", ip),
-                ("vendor", vendor),
-                ("device_type", model),
-            ):
-                if value is not None:
-                    conn.execute(
-                        "INSERT INTO field_provenance "
-                        "(asset_id, field, provenance, set_at) "
-                        "VALUES (?, ?, 'imported', ?)",
-                        (asset_id, field_name, iso),
-                    )
+            outcome = apply_imported_observation(conn, fields=fields, mac=None, now=now)
 
-            imported += 1
+            if isinstance(outcome, Inserted):
+                imported += 1
+            else:
+                # Updated (merged) or Deferred (review queue) — count as skipped.
+                skipped += 1
 
         url = page.get("next")
 

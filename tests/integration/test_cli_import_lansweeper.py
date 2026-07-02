@@ -87,13 +87,17 @@ def test_import_lansweeper_demo_fixture_idempotent(home: Path) -> None:
         app, ["import-lansweeper", str(DEMO_FIXTURE)], env=_env(home),
     )
     assert r1.exit_code == 0, r1.stdout
-    # 21 clean inserts, 1 MAC-match update (dup-mac-row), 2 skipped
-    # (invalid IP + blank row), 3 proposed, 1 review-queue, 1 error.
+    # 21 clean inserts, 2 MAC/IP-match updates, 2 skipped
+    # (invalid IP + blank row), 5 proposed, 0 review-queue, 1 error.
+    # The review-queue count dropped from 1→0 vs the old import resolver
+    # because IP-only matches now merge via core.identity.resolve (same as
+    # the scan path) instead of deferring to review, producing proposed
+    # changes on the conflicting MANUAL fields.
     assert "imported 21" in r1.stdout
-    assert "updated 1" in r1.stdout
+    assert "updated 2" in r1.stdout
     assert "skipped 2" in r1.stdout
-    assert "proposed 3" in r1.stdout
-    assert "review-queue 1" in r1.stdout
+    assert "proposed 5" in r1.stdout
+    assert "review-queue 0" in r1.stdout
     assert "errors 1" in r1.stdout
 
     db_path = home / ".langusta" / "db.sqlite"

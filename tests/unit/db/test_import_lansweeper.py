@@ -171,12 +171,13 @@ def test_row_without_identifying_fields_is_skipped(db: Path, tmp_path: Path) -> 
     assert rows == []
 
 
-def test_ip_collision_without_mac_defers_to_review_queue(
+def test_ip_collision_without_mac_merges_with_provenance(
     db: Path, tmp_path: Path,
 ) -> None:
-    """An IP-only identity match can't be resolved automatically — the
-    importer routes the row to the review queue instead of merging blindly
-    or dropping it silently."""
+    """An IP-only identity match now merges through ``core.identity.resolve``,
+    which is consistent with the scan path. The existing MANUAL hostname
+    conflicts with the imported hostname → a proposed change is filed, not a
+    silent overwrite. The IP field is the same → no change proposed."""
     with connect(db) as conn:
         assets_dal.insert_manual(
             conn, hostname="existing", primary_ip="10.0.0.1", now=NOW,
@@ -191,9 +192,11 @@ def test_ip_collision_without_mac_defers_to_review_queue(
         review_count = conn.execute(
             "SELECT COUNT(*) FROM review_queue",
         ).fetchone()[0]
-    assert report.review_queue_entries == 1
-    assert review_count == 1
-    assert len(rows) == 1  # existing untouched
+    assert report.updated == 1
+    assert report.proposed_changes_created == 1
+    assert review_count == 0
+    assert len(rows) == 1  # merged into the existing asset
+    assert rows[0].hostname == "existing"  # MANUAL hostname preserved
 
 
 # ---------------------------------------------------------------------------
@@ -476,20 +479,27 @@ def test_existing_imported_field_with_conflict_creates_proposed_change(
 # ---------------------------------------------------------------------------
 
 
-def test_ip_collision_review_queue_observation_json_round_trips(
+def test_ambiguous_review_queue_observation_json_round_trips(
     db: Path, tmp_path: Path,
 ) -> None:
+    """When MAC and IP point at different assets, the row is deferred to
+    the review queue. The observation and candidates JSON should round-trip."""
     import json as _json
 
     with connect(db) as conn:
         assets_dal.insert_manual(
-            conn, hostname="existing", primary_ip="10.0.0.1", now=NOW,
+            conn, hostname="mac-owner", primary_ip="10.0.0.1",
+            mac="aa:bb:cc:00:00:01", now=NOW,
+        )
+        assets_dal.insert_manual(
+            conn, hostname="ip-owner", primary_ip="10.0.0.2",
+            mac="aa:bb:cc:00:00:02", now=NOW,
         )
     csv_path = tmp_path / "ls.csv"
     _write_csv(csv_path, [
         {
-            "AssetName": "ghost", "IPAddress": "10.0.0.1",
-            "Mac": "", "Manufacturer": "GhostCorp",
+            "AssetName": "mystery", "IPAddress": "10.0.0.2",
+            "Mac": "aa:bb:cc:00:00:01", "Manufacturer": "GhostCorp",
         },
     ])
     with connect(db) as conn:
@@ -499,11 +509,11 @@ def test_ip_collision_review_queue_observation_json_round_trips(
         ).fetchone()
     obs = _json.loads(row["observation"])
     cands = _json.loads(row["candidates"])
-    assert obs["hostname"] == "ghost"
-    assert obs["primary_ip"] == "10.0.0.1"
+    assert obs["hostname"] == "mystery"
+    assert obs["primary_ip"] == "10.0.0.2"
     assert obs["vendor"] == "GhostCorp"
-    assert cands[0]["reason"] == "ip_match"
-    assert cands[0]["score"] == 80
+    # Candidates come from core.identity.resolve — two scored above the floor.
+    assert len(cands) == 2
 
 
 def test_mac_and_ip_point_to_different_assets_goes_to_review_queue(
@@ -534,10 +544,40 @@ def test_mac_and_ip_point_to_different_assets_goes_to_review_queue(
     import json as _json
     cands = _json.loads(row["candidates"])
     asset_ids = {int(c["asset_id"]) for c in cands}
-    reasons = {c["reason"] for c in cands}
     assert report.review_queue_entries == 1
     assert asset_ids == {a1, a2}
-    assert reasons == {"mac_match", "ip_match"}
+    # core.identity.resolve returns a single reason for all candidates.
+    reasons = {c["reason"] for c in cands}
+    assert len(reasons) == 1  # one unified reason from the resolver
+
+
+def test_mac_hostname_conflict_defers_to_review(
+    db: Path, tmp_path: Path,
+) -> None:
+    """MAC points at asset A but hostname points at asset B — the
+    Lansweeper-failure case. The old import resolver silently merged on MAC;
+    the new code routes through core.identity.resolve which returns
+    Ambiguous, deferring to the review queue."""
+    with connect(db) as conn:
+        assets_dal.insert_manual(
+            conn, hostname="a1-host", primary_ip="10.0.0.1",
+            mac="aa:bb:cc:00:00:01", now=NOW,
+        )
+        assets_dal.insert_manual(
+            conn, hostname="b-host", primary_ip="10.0.0.2",
+            mac="aa:bb:cc:00:00:02", now=NOW,
+        )
+    csv_path = tmp_path / "ls.csv"
+    _write_csv(csv_path, [
+        # MAC matches a1, hostname matches a2 → ambiguous
+        {
+            "AssetName": "b-host", "IPAddress": "10.0.0.3",
+            "Mac": "aa:bb:cc:00:00:01",
+        },
+    ])
+    with connect(db) as conn:
+        report = import_lansweeper_csv(conn, csv_path=csv_path, now=NOW)
+    assert report.review_queue_entries == 1
 
 
 # ---------------------------------------------------------------------------
